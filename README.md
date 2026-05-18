@@ -8,7 +8,21 @@
 
 **degit** makes copies of git repositories. When you run `degit some-user/some-repo`, it will find the latest commit on https://github.com/some-user/some-repo and download the associated tar file to `~/.degit/some-user/some-repo/commithash.tar.gz` if it doesn't already exist locally. (This is much quicker than using `git clone`, because you're not downloading the entire git history.)
 
-_Requires Node 8 or above, because `async` and `await` are the cat's pyjamas_
+## Requirements
+
+- Node.js **20** or later (see `engines` in `package.json`)
+- [Bun](https://bun.sh) **1.3.14** when developing this repository (see `packageManager` in `package.json`)
+
+End users can still install the published package with npm (`npm install -g degit`). For a dev clone of this repo, use Bun so the lockfile and `bunfig.toml` apply; `minimumReleaseAge` is set to 14 days so installs skip very fresh publishes.
+
+```bash
+git clone https://github.com/Rich-Harris/degit.git
+cd degit
+bun install
+bun run build
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute. [AGENTS.md](AGENTS.md) summarizes setup and commands for tooling and coding agents. When you change development workflow, CI, or contributor-facing instructions, update **README.md**, **CONTRIBUTING.md**, and **AGENTS.md** together so they stay consistent.
 
 ## Installation
 
@@ -58,7 +72,7 @@ The default branch is `master`.
 degit user/repo#dev       # branch
 degit user/repo#v1.2.3    # release tag
 degit user/repo#1234abcd  # commit hash
-````
+```
 
 ### Create a new folder for the project
 
@@ -121,7 +135,7 @@ const emitter = degit('user/repo', {
 	verbose: true,
 });
 
-emitter.on('info', info => {
+emitter.on('info', (info) => {
 	console.log(info.message);
 });
 
