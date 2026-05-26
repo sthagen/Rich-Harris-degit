@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import tar from 'tar';
+import * as tar from 'tar';
 import EventEmitter from 'node:events';
 import chalk from 'chalk';
 import { rimrafSync } from 'sander';
@@ -15,18 +15,105 @@ import {
 	tryRequire,
 	unstashFiles,
 } from './utils.js';
+import { getProvider, parse, type Repo } from './repo.js';
+import { fetchRefs } from './fetch-refs.js';
 
 const validModes = new Set(['tar', 'git']);
 
-export default function degit(src, opts) {
+type ExecResult = {
+	stderr: string;
+	stdout: string;
+};
+
+type ExecFn = (command: string, args?: string[]) => Promise<ExecResult>;
+
+type FetchFn = (url: string, dest: string, proxy?: string) => Promise<void>;
+
+type ConstructorOptions = {
+	cache?: boolean;
+	exec?: ExecFn;
+	fetch?: FetchFn;
+	force?: boolean;
+	mode?: 'tar' | 'git';
+	verbose?: boolean;
+};
+
+type EventInfo = {
+	code?: InfoCode | DegitErrorCode;
+	dest?: string;
+	message: string;
+	repo?: Repo;
+	url?: string;
+	original?: unknown;
+	ref?: string;
+};
+
+type Directive =
+	| {
+			action: 'clone';
+			cache?: boolean;
+			src: string;
+			verbose?: boolean;
+	  }
+	| {
+			action: 'remove';
+			files: string | string[];
+	  };
+
+type CloneDirective = Extract<Directive, { action: 'clone' }>;
+type RemoveDirective = Extract<Directive, { action: 'remove' }>;
+
+type DirectiveActions = {
+	clone: (dir: string, dest: string, action: CloneDirective) => Promise<void>;
+	remove: (dest: string, action: RemoveDirective) => void;
+};
+
+export type Options = ConstructorOptions;
+export type ValidModes = 'tar' | 'git';
+export type InfoCode =
+	| 'SUCCESS'
+	| 'FILE_DOES_NOT_EXIST'
+	| 'REMOVED'
+	| 'DEST_NOT_EMPTY'
+	| 'DEST_IS_EMPTY'
+	| 'USING_CACHE'
+	| 'FOUND_MATCH'
+	| 'FILE_EXISTS'
+	| 'PROXY'
+	| 'DOWNLOADING'
+	| 'EXTRACTING';
+export type DegitErrorCode =
+	| 'DEST_NOT_EMPTY'
+	| 'MISSING_REF'
+	| 'COULD_NOT_DOWNLOAD'
+	| 'BAD_SRC'
+	| 'UNSUPPORTED_HOST'
+	| 'BAD_REF'
+	| 'COULD_NOT_FETCH';
+export type Info = EventInfo;
+export type Action = Directive;
+export type DegitAction = CloneDirective;
+export type RemoveAction = RemoveDirective;
+
+export default function degit(src: string, opts: ConstructorOptions = {}) {
 	return new Degit(src, opts);
 }
 
 class Degit extends EventEmitter {
-	constructor(src, opts = {}) {
+	cache?: boolean;
+	force?: boolean;
+	verbose?: boolean;
+	proxy?: string;
+	repo: Repo;
+	mode: 'tar' | 'git';
+	_fetch: FetchFn;
+	_exec: ExecFn;
+	_hasStashed: boolean;
+	directiveActions: DirectiveActions;
+
+	constructor(src: string, opts: ConstructorOptions = {}) {
 		super();
 
-		this.src = src;
 		this.cache = opts.cache;
 		this.force = opts.force;
 		this.verbose = opts.verbose;
@@ -53,15 +140,17 @@ class Degit extends EventEmitter {
 					force: true,
 					cache: action.cache,
 					verbose: action.verbose,
+					fetch: this._fetch,
+					exec: this._exec,
 				};
 				const d = degit(action.src, opts);
 
 				d.on('info', (event) => {
-					console.error(chalk.cyan(`> ${event.message.replace('options.', '--')}`));
+					console.log(chalk.cyan(`> ${event.message.replace('options.', '--')}`));
 				});
 
 				d.on('warn', (event) => {
-					console.error(chalk.magenta(`! ${event.message.replace('options.', '--')}`));
+					console.warn(chalk.magenta(`! ${event.message.replace('options.', '--')}`));
 				});
 
 				await d.clone(dest).catch((error) => {
@@ -69,21 +158,22 @@ class Degit extends EventEmitter {
 					process.exit(1);
 				});
 			},
-			remove: this.remove.bind(this),
+			remove: (dest, action) => this.remove(dest, action),
 		};
 	}
 
-	_getDirectives(dest) {
+	_getDirectives(dest: string): Directive[] | false {
 		const directivesPath = path.resolve(dest, degitConfigName);
 		const directives = tryRequire(directivesPath, { clearCache: true }) || false;
 		if (directives) {
+			// eslint-disable-next-line security/detect-non-literal-fs-filename
 			fs.unlinkSync(directivesPath);
 		}
 
 		return directives;
 	}
 
-	async clone(dest) {
+	async clone(dest: string): Promise<void> {
 		this._checkDirIsEmpty(dest);
 
 		const { repo } = this;
@@ -99,25 +189,30 @@ class Degit extends EventEmitter {
 		this._info({
 			code: 'SUCCESS',
 			dest,
-			message: `cloned ${chalk.bold(repo.user + '/' + repo.name)}#${chalk.bold(
-				repo.ref,
-			)}${dest !== '.' ? ` to ${dest}` : ''}`,
+			message: `cloned ${chalk.bold(repo.user + '/' + repo.name)}#${chalk.bold(repo.ref)}${dest !== '.' ? ` to ${dest}` : ''}`,
 			repo,
 		});
 
 		const directives = this._getDirectives(dest);
 		if (directives) {
-			for (const d of directives) {
+			await directives.reduce(async (previous, directive) => {
+				await previous;
+
 				// TODO, can this be a loop with an index to pass for better error messages?
-				await this.directiveActions[d.action](dir, dest, d);
-			}
+				if (directive.action === 'clone') {
+					await this.directiveActions.clone(dir, dest, directive);
+				} else {
+					await this.directiveActions.remove(dest, directive);
+				}
+			}, Promise.resolve());
 			if (this._hasStashed === true) {
 				unstashFiles(dir, dest);
 			}
 		}
 	}
 
-	remove(dir, dest, action) {
+	/* eslint-disable security/detect-non-literal-fs-filename */
+	remove(dest: string, action: RemoveDirective) {
 		let { files } = action;
 		if (!Array.isArray(files)) {
 			files = [files];
@@ -150,7 +245,7 @@ class Degit extends EventEmitter {
 		}
 	}
 
-	_checkDirIsEmpty(dir) {
+	_checkDirIsEmpty(dir: string) {
 		try {
 			const files = fs.readdirSync(dir);
 			if (files.length > 0) {
@@ -177,22 +272,22 @@ class Degit extends EventEmitter {
 			if (error.code !== 'ENOENT') throw error;
 		}
 	}
-
-	_info(info) {
+	/* eslint-enable security/detect-non-literal-fs-filename */
+	_info(info: EventInfo) {
 		this.emit('info', info);
 	}
 
-	_warn(info) {
+	_warn(info: EventInfo) {
 		this.emit('warn', info);
 	}
 
-	_verbose(info) {
+	_verbose(info: EventInfo) {
 		if (this.verbose) {
 			this._info(info);
 		}
 	}
 
-	async _getHash(repo, cached) {
+	async _getHash(repo: Repo, cached: Record<string, string>): Promise<string | undefined> {
 		try {
 			const refs = await this._fetchRefs(repo);
 			if (repo.ref === 'HEAD') {
@@ -207,7 +302,7 @@ class Degit extends EventEmitter {
 		}
 	}
 
-	_getHashFromCache(repo, cached) {
+	_getHashFromCache(repo: Repo, cached: Record<string, string>): string | undefined {
 		if (repo.ref in cached) {
 			const hash = cached[repo.ref];
 			this._info({
@@ -218,7 +313,10 @@ class Degit extends EventEmitter {
 		}
 	}
 
-	_selectRef(refs, selector) {
+	_selectRef(
+		refs: Array<{ hash: string; name?: string; type?: string }>,
+		selector: string,
+	): string | null | undefined {
 		for (const ref of refs) {
 			if (ref.name === selector) {
 				this._verbose({
@@ -240,10 +338,10 @@ class Degit extends EventEmitter {
 		}
 	}
 
-	async _cloneWithTar(dir, dest) {
+	async _cloneWithTar(dir: string, dest: string): Promise<void> {
 		const { repo } = this;
 
-		const cached = tryRequire(path.join(dir, 'map.json')) || {};
+		const cached = (tryRequire(path.join(dir, 'map.json')) || {}) as Record<string, string>;
 
 		const hash = this.cache
 			? this._getHashFromCache(repo, cached)
@@ -260,16 +358,12 @@ class Degit extends EventEmitter {
 		}
 
 		const file = `${dir}/${hash}.tar.gz`;
-		const url =
-			repo.site === 'gitlab'
-				? `${repo.url}/repository/archive.tar.gz?ref=${hash}`
-				: repo.site === 'bitbucket'
-					? `${repo.url}/get/${hash}.tar.gz`
-					: `${repo.url}/archive/${hash}.tar.gz`;
+		const url = getProvider(repo.site).archiveUrl(repo, hash);
 
 		try {
 			if (!this.cache) {
 				try {
+					// eslint-disable-next-line security/detect-non-literal-fs-filename
 					fs.statSync(file);
 					this._verbose({
 						code: 'FILE_EXISTS',
@@ -312,52 +406,17 @@ class Degit extends EventEmitter {
 		await untar(file, dest, subdir);
 	}
 
-	async _cloneWithGit(dir, dest) {
-		await this._exec(`git clone ${this.repo.ssh} ${dest}`);
-		await this._exec(`rm -rf ${path.resolve(dest, '.git')}`);
+	async _cloneWithGit(dir: string, dest: string): Promise<void> {
+		await this._exec('git', ['clone', '--', this.repo.ssh, dest]);
+		await this._exec('rm', ['-rf', path.resolve(dest, '.git')]);
 	}
 
-	_fetchRefs(repo) {
+	_fetchRefs(repo: Repo) {
 		return fetchRefs(repo, this._exec);
 	}
 }
 
-const supported = new Set(['github', 'gitlab', 'bitbucket', 'git.sr.ht']);
-
-function parse(src) {
-	const match =
-		/^(?:(?:https:\/\/)?([^:/]+\.[^:/]+)\/|git@([^:/]+)[:/]|([^/]+):)?([^/\s]+)\/([^/\s#]+)(?:((?:\/[^/\s#]+)+))?(?:\/)?(?:#(.+))?/.exec(
-			src,
-		);
-	if (!match) {
-		throw new DegitError(`could not parse ${src}`, {
-			code: 'BAD_SRC',
-		});
-	}
-
-	const site = (match[1] || match[2] || match[3] || 'github').replace(/\.(com|org)$/, '');
-	if (!supported.has(site)) {
-		throw new DegitError(`degit supports GitHub, GitLab, Sourcehut and BitBucket`, {
-			code: 'UNSUPPORTED_HOST',
-		});
-	}
-
-	const user = match[4];
-	const name = match[5].replace(/\.git$/, '');
-	const subdir = match[6];
-	const ref = match[7] || 'HEAD';
-
-	const domain =
-		site === 'git.sr.ht' ? 'git.sr.ht' : site === 'bitbucket' ? `${site}.org` : `${site}.com`;
-	const url = `https://${domain}/${user}/${name}`;
-	const ssh = `git@${domain}:${user}/${name}`;
-
-	const mode = supported.has(site) ? 'tar' : 'git';
-
-	return { mode, name, ref, site, ssh, subdir, url, user };
-}
-
-async function untar(file, dest, subdir = null) {
+async function untar(file: string, dest: string, subdir: string | null = null): Promise<void> {
 	return tar.extract(
 		{
 			C: dest,
@@ -367,47 +426,8 @@ async function untar(file, dest, subdir = null) {
 		subdir ? [subdir] : [],
 	);
 }
-
-async function fetchRefs(repo, runExec = exec) {
-	try {
-		const { stdout } = await runExec(`git ls-remote ${repo.url}`);
-
-		return stdout
-			.split('\n')
-			.filter(Boolean)
-			.map((row) => {
-				const [hash, ref] = row.split('\t');
-
-				if (ref === 'HEAD') {
-					return {
-						hash,
-						type: 'HEAD',
-					};
-				}
-
-				const match = /refs\/(\w+)\/(.+)/.exec(ref);
-				if (!match) {
-					throw new DegitError(`could not parse ${ref}`, {
-						code: 'BAD_REF',
-					});
-				}
-
-				return {
-					hash,
-					name: match[2],
-					type: match[1] === 'heads' ? 'branch' : match[1] === 'refs' ? 'ref' : match[1],
-				};
-			});
-	} catch (error) {
-		throw new DegitError(`could not fetch remote ${repo.url}`, {
-			code: 'COULD_NOT_FETCH',
-			original: error,
-			url: repo.url,
-		});
-	}
-}
-
-function updateCache(dir, repo, hash, cached) {
+/* eslint-disable security/detect-non-literal-fs-filename, security/detect-possible-timing-attacks, security/detect-object-injection */
+function updateCache(dir: string, repo: Repo, hash: string, cached: Record<string, string>) {
 	// Update access logs
 	const logs = tryRequire(path.join(dir, 'access.json')) || {};
 	logs[repo.ref] = new Date().toISOString();
@@ -440,3 +460,5 @@ function updateCache(dir, repo, hash, cached) {
 	cached[repo.ref] = hash;
 	fs.writeFileSync(path.join(dir, 'map.json'), JSON.stringify(cached, null, '  '));
 }
+
+/* eslint-enable security/detect-non-literal-fs-filename, security/detect-possible-timing-attacks, security/detect-object-injection */

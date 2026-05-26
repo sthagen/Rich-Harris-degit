@@ -1,5 +1,39 @@
 # degit changelog
 
+## 3.3.1
+
+- Harden git-mode command execution and remote validation.
+
+## 3.3.0
+
+- Add platform-aware cache resolution so degit uses the standard user cache location on each supported OS.
+
+## 3.2.0
+
+- Split CLI output by severity so info messages go to stdout while warnings and errors stay on stderr.
+
+## 3.1.2
+
+- Fix interactive repo selection on Windows.
+
+## 3.1.1
+
+- Sync `assets/help.md` to say branches default to the repository's default branch.
+
+## 3.1.0
+
+- Add new type definitions for the published package surface.
+
+## 3.0.0
+
+- Major release for the Node 20+ line; v2 remains the legacy Node 8-compatible branch.
+- Upgrade `tar` to a patched release to address the security issue that affected the previous dependency.
+
+## 2.8.5
+
+- Final v2 security patch; keep Node 8 compatibility on the legacy line.
+- Node 20 starts with v3.
+
 ## 2.8.4
 
 - Whoops

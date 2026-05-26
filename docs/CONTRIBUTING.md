@@ -71,6 +71,7 @@ Depending on how large the project is, you may want to outsource the questioning
 A good bug report shouldn't leave others needing to chase you up for more information. Therefore, we ask you to investigate carefully, collect information and describe the issue in detail in your report. Please complete the following steps in advance to help us fix any potential bug as fast as possible.
 
 - Make sure that you are using the latest version.
+- If you are verifying a production bug, reproduce it with the published `degit` package (for example `npx degit@latest ...` or `npm i -g degit`) rather than the raw CLI code in this repository.
 - Determine if your bug is really a bug and not an error on your side e.g. using incompatible environment components/versions (Make sure that you have read the [documentation](https://github.com/Rich-Harris/degit/blob/master/README.md). If you are looking for support, you might want to check [this section](#i-have-a-question)).
 - To see if other users have experienced (and potentially already solved) the same issue you are having, check if there is not already a bug report existing for your bug or error in the [bug tracker](https://github.com/Rich-Harris/degit/issues?q=label%3Abug).
 - Also make sure to search the internet (including Stack Overflow) to see if users outside of the GitHub community have discussed the issue.
@@ -85,7 +86,7 @@ A good bug report shouldn't leave others needing to chase you up for more inform
 
 #### How Do I Submit a Good Bug Report?
 
-> You must never report security related issues, vulnerabilities or bugs including sensitive information to the issue tracker, or elsewhere in public. Instead sensitive bugs must be sent by email to <me@yogev.dev>.
+> Security issues are handled privately. Please see [SECURITY.md](SECURITY.md) for how to report vulnerabilities.
 
 <!-- You may add a PGP key to allow the messages to be sent encrypted as well. -->
 
@@ -136,7 +137,7 @@ Enhancement suggestions are tracked as [GitHub issues](https://github.com/Rich-H
 Prerequisites:
 
 - Node.js **20** or later (see `engines` in `package.json`)
-- [Bun](https://bun.sh) **1.3.14** (same version as CI; see [.github/workflows/build.yml](.github/workflows/build.yml), [.github/workflows/test.yml](.github/workflows/test.yml), [.github/workflows/lint.yml](.github/workflows/lint.yml), and [.github/workflows/duplicates.yml](.github/workflows/duplicates.yml))
+- [Bun](https://bun.sh) **1.3.14** (same version as CI; see [.github/workflows/quality.yml](.github/workflows/quality.yml), [.github/workflows/verification.yml](.github/workflows/verification.yml), [.github/workflows/security.yml](.github/workflows/security.yml), and [.github/workflows/integration.yml](.github/workflows/integration.yml))
 
 Clone the repository, install dependencies, and build:
 
@@ -150,21 +151,28 @@ bun run build
 Before opening a pull request, run the same checks CI runs:
 
 ```bash
-bun run format:ci
+bun run build
 bun run test
+bun run format:ci
 bun run lint:ci
 bun run duplicates:ci
+bun run knip:ci
+bun run audit
 ```
 
 `bun run test` runs the test suite with [Vitest](https://vitest.dev/). The `pretest` script builds first.
 
+`bun run audit` runs the dependency audit that also backs [.github/workflows/security.yml](.github/workflows/security.yml).
+
 Keep changes focused, squash the branch to a single commit before opening the pull request, add or update tests when behavior changes, and describe the motivation in the pull request so reviewers can follow your intent.
+
+Test names should describe behavior in the form `it('X when Y')`, so the action appears first and the triggering condition comes after `when`.
 
 ### Improving The Documentation
 
-Documentation lives in the repository root (`README.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `AGENTS.md`) and in `help.md` (CLI help text). Typos, clarifications, and examples that match current behavior are welcome as pull requests.
+Documentation lives in the repository root (`README.md`, `AGENTS.md`, `LICENSE.md`) and in `docs/` (`ARCHITECTURE.md`, `CHANGELOG.md`, `CODE_OF_CONDUCT.md`, `CONTRIBUTING.md`, `SECURITY.md`), plus `assets/help.md` for the published CLI help text. Typos, clarifications, and examples that match current behavior are welcome as pull requests.
 
-`AGENTS.md` is the agent-oriented index and command reference; it must stay aligned with the human docs and with reality (`package.json`, `.github/workflows`, `vitest.config.js`, and so on). When your change updates how the repo is developed, tested, released, or explained to contributors, update **every** affected doc in the same pull request so nothing drifts.
+`AGENTS.md` is the agent-oriented index and command reference; it must stay aligned with the human docs and with reality (`package.json`, `.github/workflows`, `vitest.config.ts`, and so on). When your change updates how the repo is developed, tested, released, or explained to contributors, update **every** affected doc in the same pull request so nothing drifts.
 
 If you are restructuring large sections or changing how features are presented, open an issue first so maintainers can agree on direction before you invest significant time.
 

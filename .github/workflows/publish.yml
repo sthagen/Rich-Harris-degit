@@ -1,0 +1,68 @@
+name: Publish
+
+on:
+    push:
+        tags:
+            - v*
+
+permissions:
+    contents: read
+    id-token: write
+
+jobs:
+    gate:
+        runs-on: ubuntu-latest
+
+        permissions:
+            pull-requests: read
+
+        outputs:
+            skip: ${{ steps.check.outputs.skip }}
+
+        steps:
+            - id: check
+              uses: actions/github-script@v9
+              with:
+                  script: |
+                      const { data: pulls } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          commit_sha: context.sha,
+                      })
+
+                      const openPulls = pulls.filter((pull) => pull.state === 'open')
+                      core.setOutput('skip', openPulls.length > 0 ? 'true' : 'false')
+
+                      if (openPulls.length > 0) {
+                          core.notice(`Skipping publish for ${context.sha} because it is associated with an open pull request.`)
+                      }
+
+    publish:
+        needs: gate
+        if: needs.gate.outputs.skip != 'true'
+        runs-on: ubuntu-latest
+
+        steps:
+            - uses: actions/checkout@v5
+
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: 1.3.14
+
+            - name: Use Node.js LTS
+              uses: actions/setup-node@v5
+              with:
+                  node-version: lts/*
+                  registry-url: https://registry.npmjs.org
+
+            - run: bun --version
+
+            - run: bun install --frozen-lockfile
+
+            - run: bun run build
+
+            - run: bun run test
+
+            - run: npm i -g npm@latest
+
+            - run: npm stage publish

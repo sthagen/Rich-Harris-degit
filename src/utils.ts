@@ -1,38 +1,57 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import homeOrTmp from 'home-or-tmp';
+import os from 'node:os';
 import https from 'node:https';
 import child_process from 'node:child_process';
-import URL from 'node:url';
+import * as URL from 'node:url';
+import { createRequire } from 'node:module';
 import Agent from 'https-proxy-agent';
 import { copydirSync, rimrafSync } from 'sander';
 
+const require = createRequire(import.meta.url);
 const tmpDirName = 'tmp';
 const degitConfigName = 'degit.json';
+
+type RequireOptions = {
+	clearCache?: boolean;
+};
+
+type ExecResult = {
+	stderr: string;
+	stdout: string;
+};
+
+type ResolveBaseOptions = {
+	env?: NodeJS.ProcessEnv;
+	homedir?: string;
+	platform?: NodeJS.Platform;
+};
 
 export { degitConfigName };
 
 export class DegitError extends Error {
-	constructor(message, opts) {
+	constructor(message: string, opts: Record<string, unknown> = {}) {
 		super(message);
 		Object.assign(this, opts);
 	}
 }
 
-export function tryRequire(file, opts) {
+export function tryRequire(file: string, opts: RequireOptions = {}) {
 	try {
 		if (opts && opts.clearCache === true) {
 			delete require.cache[require.resolve(file)];
 		}
+		// oxlint-disable-next-line security/detect-non-literal-require
 		return require(file);
 	} catch {
 		return null;
 	}
 }
 
-export function exec(command) {
+/* eslint-disable security/detect-non-literal-fs-filename */
+export function exec(command: string, args: string[] = []): Promise<ExecResult> {
 	return new Promise((fulfil, reject) => {
-		child_process.exec(command, (err, stdout, stderr) => {
+		child_process.execFile(command, args, (err, stdout, stderr) => {
 			if (err) {
 				reject(err);
 				return;
@@ -43,7 +62,7 @@ export function exec(command) {
 	});
 }
 
-export function mkdirp(dir) {
+export function mkdirp(dir: string): void {
 	const parent = path.dirname(dir);
 	if (parent === dir) {
 		return;
@@ -58,14 +77,14 @@ export function mkdirp(dir) {
 	}
 }
 
-export function fetch(url, dest, proxy) {
+export function fetch(url: string, dest: string, proxy?: string): Promise<void> {
 	return new Promise((fulfil, reject) => {
-		let options = url;
+		let options: string | import('node:http').RequestOptions = url;
 
 		if (proxy) {
 			const parsedUrl = URL.parse(url);
 			options = {
-				agent: new Agent(proxy),
+				agent: Agent(proxy) as unknown as import('node:http').Agent,
 				hostname: parsedUrl.host,
 				path: parsedUrl.path,
 			};
@@ -81,7 +100,7 @@ export function fetch(url, dest, proxy) {
 				} else {
 					response
 						.pipe(fs.createWriteStream(dest))
-						.on('finish', () => fulfil())
+						.on('finish', () => fulfil(undefined))
 						.on('error', reject);
 				}
 			})
@@ -89,7 +108,7 @@ export function fetch(url, dest, proxy) {
 	});
 }
 
-export function stashFiles(dir, dest) {
+export function stashFiles(dir: string, dest: string): void {
 	const tmpDir = path.join(dir, tmpDirName);
 	rimrafSync(tmpDir);
 	mkdirp(tmpDir);
@@ -107,7 +126,7 @@ export function stashFiles(dir, dest) {
 	});
 }
 
-export function unstashFiles(dir, dest) {
+export function unstashFiles(dir: string, dest: string): void {
 	const tmpDir = path.join(dir, tmpDirName);
 	fs.readdirSync(tmpDir).forEach((filename) => {
 		const tmpFile = path.join(tmpDir, filename);
@@ -126,4 +145,21 @@ export function unstashFiles(dir, dest) {
 	rimrafSync(tmpDir);
 }
 
-export const base = path.join(homeOrTmp, '.degit');
+export function resolveBase({
+	env = process.env,
+	homedir = os.homedir(),
+	platform = process.platform,
+}: ResolveBaseOptions = {}): string {
+	if (platform === 'win32') {
+		return path.join(env.LOCALAPPDATA ?? path.join(homedir, 'AppData', 'Local'), 'degit');
+	}
+
+	if (platform === 'darwin') {
+		return path.join(homedir, 'Library', 'Caches', 'degit');
+	}
+
+	return path.join(env.XDG_CACHE_HOME ?? path.join(homedir, '.cache'), 'degit');
+}
+
+/* eslint-enable security/detect-non-literal-fs-filename */
+export const base = resolveBase();
