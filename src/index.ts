@@ -2,8 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import * as tar from 'tar';
 import EventEmitter from 'node:events';
-import chalk from 'chalk';
-import { rimrafSync } from 'sander';
+import colors from 'yoctocolors';
 import {
 	DegitError,
 	base,
@@ -66,6 +65,7 @@ export type ValidModes = 'tar' | 'git';
 export type InfoCode =
 	| 'SUCCESS'
 	| 'FILE_DOES_NOT_EXIST'
+	| 'FILE_OUTSIDE_DEST'
 	| 'REMOVED'
 	| 'DEST_NOT_EMPTY'
 	| 'DEST_IS_EMPTY'
@@ -142,15 +142,15 @@ class Degit extends EventEmitter {
 				const d = degit(action.src, opts);
 
 				d.on('info', (event) => {
-					console.log(chalk.cyan(`> ${event.message.replace('options.', '--')}`));
+					console.log(colors.cyan(`> ${event.message.replace('options.', '--')}`));
 				});
 
 				d.on('warn', (event) => {
-					console.warn(chalk.magenta(`! ${event.message.replace('options.', '--')}`));
+					console.warn(colors.magenta(`! ${event.message.replace('options.', '--')}`));
 				});
 
 				await d.clone(dest).catch((error) => {
-					console.error(chalk.red(`! ${error.message}`));
+					console.error(colors.red(`! ${error.message}`));
 					process.exit(1);
 				});
 			},
@@ -195,7 +195,7 @@ class Degit extends EventEmitter {
 			this._info({
 				code: 'SUCCESS',
 				dest,
-				message: `cloned ${chalk.bold(repo.user + '/' + repo.name)}#${chalk.bold(repo.ref)}${dest !== '.' ? ` to ${dest}` : ''}`,
+				message: `cloned ${colors.bold(repo.user + '/' + repo.name)}#${colors.bold(repo.ref)}${dest !== '.' ? ` to ${dest}` : ''}`,
 				repo,
 			});
 			return;
@@ -219,7 +219,7 @@ class Degit extends EventEmitter {
 		this._info({
 			code: 'SUCCESS',
 			dest,
-			message: `cloned ${chalk.bold(repo.user + '/' + repo.name)}#${chalk.bold(repo.ref)}${dest !== '.' ? ` to ${dest}` : ''}`,
+			message: `cloned ${colors.bold(repo.user + '/' + repo.name)}#${colors.bold(repo.ref)}${dest !== '.' ? ` to ${dest}` : ''}`,
 			repo,
 		});
 
@@ -247,13 +247,22 @@ class Degit extends EventEmitter {
 		if (!Array.isArray(files)) {
 			files = [files];
 		}
+		const root = path.resolve(dest);
 		const removedFiles = files
 			.map((file) => {
-				const filePath = path.resolve(dest, file);
+				const filePath = path.resolve(root, file);
+				const relativePath = path.relative(root, filePath);
+				if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+					this._warn({
+						code: 'FILE_OUTSIDE_DEST',
+						message: `action wants to remove ${colors.bold(file)} but it is outside the destination, skipping`,
+					});
+					return null;
+				}
 				if (fs.existsSync(filePath)) {
 					const isDir = fs.lstatSync(filePath).isDirectory();
 					if (isDir) {
-						rimrafSync(filePath);
+						fs.rmSync(filePath, { force: true, recursive: true });
 						return `${file}/`;
 					}
 					fs.unlinkSync(filePath);
@@ -261,7 +270,7 @@ class Degit extends EventEmitter {
 				}
 				this._warn({
 					code: 'FILE_DOES_NOT_EXIST',
-					message: `action wants to remove ${chalk.bold(file)} but it does not exist`,
+					message: `action wants to remove ${colors.bold(file)} but it does not exist`,
 				});
 				return null;
 			})
@@ -270,7 +279,7 @@ class Degit extends EventEmitter {
 		if (removedFiles.length > 0) {
 			this._info({
 				code: 'REMOVED',
-				message: `removed: ${chalk.bold(removedFiles.map((d) => chalk.bold(d)).join(', '))}`,
+				message: `removed: ${colors.bold(removedFiles.map((d) => colors.bold(d)).join(', '))}`,
 			});
 		}
 	}
@@ -465,7 +474,7 @@ class Degit extends EventEmitter {
 				original: error,
 			});
 		} finally {
-			rimrafSync(extractedDir);
+			fs.rmSync(extractedDir, { force: true, recursive: true });
 		}
 
 		if (shouldFallbackToGit) {

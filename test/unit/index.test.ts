@@ -1,4 +1,3 @@
-import sourceMapSupport from 'source-map-support';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,7 +12,14 @@ import {
 	createMockFetch,
 } from '../helpers.js';
 
-sourceMapSupport.install();
+vi.mock('../../src/utils.js', async () => {
+	const actual = await vi.importActual<typeof import('../../src/utils.js')>('../../src/utils.js');
+
+	return {
+		...actual,
+		base: path.join(process.cwd(), '.tmp', 'index-suite-cache'),
+	};
+});
 
 const refsHash = '0123456789abcdef0123456789abcdef0123456789';
 const gitRefs = [{ hash: refsHash, type: 'HEAD' }];
@@ -500,6 +506,52 @@ describe('degit index', () => {
 				() => degit('Rich-Harris/degit-test-repo', { mode: 'svn' }),
 				/Valid modes are/,
 			);
+		});
+
+		it('removes nested directories recursively from the destination', () => {
+			const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+
+			try {
+				fs.mkdirSync(path.join(dest, 'nested', 'child'), { recursive: true });
+				fs.writeFileSync(path.join(dest, 'nested', 'child', 'file.txt'), 'nested\n');
+				fs.writeFileSync(path.join(dest, 'flat.txt'), 'flat\n');
+
+				const emitter = degit('Rich-Harris/degit-test-repo');
+				emitter.remove(dest, { files: ['nested', 'flat.txt'] });
+
+				assert.equal(fs.existsSync(path.join(dest, 'nested')), false);
+				assert.equal(fs.existsSync(path.join(dest, 'flat.txt')), false);
+			} finally {
+				fs.rmSync(dest, { force: true, recursive: true });
+			}
+		});
+
+		it('warns and skips paths that escape the destination when removing files', () => {
+			const workspace = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+			const dest = path.join(workspace, 'dest');
+			const sibling = path.join(workspace, 'sibling');
+			const warnings: string[] = [];
+
+			try {
+				fs.mkdirSync(dest, { recursive: true });
+				fs.mkdirSync(sibling, { recursive: true });
+				fs.writeFileSync(path.join(sibling, 'secret.txt'), 'secret\n');
+
+				const emitter = degit('Rich-Harris/degit-test-repo');
+				emitter.on('warn', (event) => warnings.push(event.message));
+
+				emitter.remove(dest, { files: ['../sibling'] });
+
+				assert.equal(fs.existsSync(path.join(sibling, 'secret.txt')), true);
+				assert.equal(warnings.length, 1);
+				assert.match(
+					warnings[0],
+					/action wants to remove .*outside the destination, skipping/,
+				);
+				assert.match(warnings[0], /\.\.\/sibling/);
+			} finally {
+				fs.rmSync(workspace, { force: true, recursive: true });
+			}
 		});
 	});
 });

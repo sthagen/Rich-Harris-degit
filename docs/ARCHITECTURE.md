@@ -61,7 +61,7 @@ Name: CLI runner
 
 Description: Parses command-line arguments, renders help text, and provides an interactive repository picker when no source is supplied. It also wires the CLI to the core clone flow and prints colored status output to stderr.
 
-Technologies: TypeScript, `mri`, `enquirer`, `fuzzysearch`, `chalk`
+Technologies: TypeScript, `mri`, `enquirer`, `fuzzysearch`, `yoctocolors`
 
 Deployment: Built into the published `degit` executable and run locally via Node 20+ or Bun during development.
 
@@ -71,7 +71,7 @@ Name: Degit orchestrator
 
 Description: Implements the main clone lifecycle as an `EventEmitter`. It parses supported source formats, resolves refs, checks and uses the local cache, downloads tarballs, falls back to SSH cloning when tarball fetches or extraction fail, and applies `degit.json` directives after the initial clone.
 
-Technologies: TypeScript, `tar`, `sander`, `chalk`, Node standard library
+Technologies: TypeScript, `tar`, `yoctocolors`, Node standard library
 
 Deployment: Bundled into the published library entrypoint and reused by the CLI and tests.
 
@@ -81,7 +81,7 @@ Name: Runtime helpers
 
 Description: Contains filesystem and process helpers used by the core flow. This includes the HTTPS fetch wrapper with proxy support, `git` command execution, recursive directory creation, local cache root detection, and stash/unstash helpers for directive processing.
 
-Technologies: Node `fs`, `path`, `os`, `https`, `child_process`, `https-proxy-agent`, `sander`
+Technologies: Node `fs`, `path`, `os`, `https`, `child_process`, `https-proxy-agent`
 
 Deployment: Internal implementation detail, not exposed as a separate package.
 
