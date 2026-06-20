@@ -3,7 +3,7 @@ import https from 'node:https';
 import assert from 'node:assert';
 import path from 'node:path';
 import { describe, it, vi } from 'vitest';
-import { fetch, resolveBase, stashFiles, unstashFiles } from '../../src/utils.js';
+import { fetch, resolveBase, stashFiles, unstashFiles } from '../../src/shared/utils.js';
 
 describe('resolveBase', () => {
 	it('uses XDG_CACHE_HOME on linux when it is set', () => {
@@ -49,7 +49,9 @@ describe('resolveBase', () => {
 			path.join('C:/Users/user/AppData/Local', 'degit'),
 		);
 	});
+});
 
+describe('stashFiles and unstashFiles', () => {
 	it('stashes and unstashes nested directories with degit.json excluded from restore', () => {
 		const root = fs.mkdtempSync(path.join(process.cwd(), 'stash-'));
 		const cacheDir = path.join(root, 'cache');
@@ -86,7 +88,9 @@ describe('resolveBase', () => {
 			fs.rmSync(root, { force: true, recursive: true });
 		}
 	});
+});
 
+describe('fetch', () => {
 	it('resumes redirect responses when following a redirected archive fetch', async () => {
 		const createWriteStreamSpy = vi.spyOn(fs, 'createWriteStream').mockReturnValue({
 			on(event: string, handler: () => void) {
