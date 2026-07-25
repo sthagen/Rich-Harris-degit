@@ -15,7 +15,6 @@ export type ConstructorOptions = {
 	force?: boolean;
 	git?: GitClient;
 	mode?: 'tar' | 'git';
-	platform?: NodeJS.Platform;
 	verbose?: boolean;
 };
 
@@ -40,7 +39,8 @@ export type DegitErrorCode =
 	| 'BAD_SRC'
 	| 'UNSUPPORTED_HOST'
 	| 'BAD_REF'
-	| 'COULD_NOT_FETCH';
+	| 'COULD_NOT_FETCH'
+	| 'MISSING_SUBDIR';
 
 export type EventInfo = {
 	code?: InfoCode | DegitErrorCode;
@@ -50,6 +50,7 @@ export type EventInfo = {
 	url?: string;
 	original?: unknown;
 	ref?: string;
+	subdir?: string;
 };
 
 export type Ref = {
@@ -66,11 +67,18 @@ export type Directive =
 			verbose?: boolean;
 	  }
 	| {
+			action: 'search_replace';
+			files: string | string[];
+			pattern: string;
+			replacement: string;
+	  }
+	| {
 			action: 'remove';
 			files: string | string[];
 	  };
 
 export type CloneDirective = Extract<Directive, { action: 'clone' }>;
+export type SearchReplaceDirective = Extract<Directive, { action: 'search_replace' }>;
 export type RemoveDirective = Extract<Directive, { action: 'remove' }>;
 
 export type Options = ConstructorOptions;

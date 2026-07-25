@@ -18,6 +18,9 @@ https://github.com/user/repo
 
 gitlab:user/repo
 https://gitlab.com/user/repo
+gitlab://git.example.com/user/repo
+
+Use `gitlab://host/user/repo` to clone from a self-hosted GitLab instance.
 
 ## BitBucket repos
 
@@ -57,5 +60,7 @@ Options:
 Private repositories are handled automatically: degit uses the tarball path by default for HTTPS sources and falls back to SSH cloning when needed. SSH/private repos still require git.
 
 `--mode=git` is still accepted for compatibility. `--mode=tar` is the default path and does not need special handling.
+
+Actions can also be defined in a top-level `degit.json` file. Supported actions are `clone`, `search_replace`, and `remove`. `search_replace` only touches explicitly listed files, resolves them relative to the destination, and uses the named environment variable as the replacement value.
 
 See https://github.com/Rich-Harris/degit for more information

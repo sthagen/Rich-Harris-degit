@@ -2,10 +2,9 @@ import fs from 'node:fs';
 import assert from 'node:assert';
 import child_process from 'node:child_process';
 import path from 'node:path';
-import { sync as rimraf } from 'rimraf';
 
 vi.mock('../../src/index.js', () => ({
-	default: vi.fn(),
+	default: vi.fn<(...args: any[]) => any>(),
 }));
 
 vi.mock('../../src/shared/utils.js', async () => {
@@ -20,7 +19,7 @@ vi.mock('../../src/shared/utils.js', async () => {
 });
 
 vi.mock('tiny-glob/sync.js', () => ({
-	default: vi.fn((pattern: string) => {
+	default: vi.fn<(pattern: string) => string[]>((pattern: string) => {
 		if (pattern === '**/access.json') {
 			return ['github/user-a/repo-a/access.json', 'github/user-b/repo-b/access.json'];
 		}
@@ -35,7 +34,7 @@ vi.mock('tiny-glob/sync.js', () => ({
 
 vi.mock('enquirer', () => ({
 	default: {
-		prompt: vi.fn(),
+		prompt: vi.fn<(...args: any[]) => Promise<any>>(),
 	},
 }));
 
@@ -44,86 +43,90 @@ import degit from '../../src/index.js';
 import { base } from '../../src/shared/utils.js';
 import enquirer from 'enquirer';
 
-const mockDegit = vi.mocked(degit);
-const mockPrompt = vi.mocked(enquirer.prompt);
-async function waitForCondition(fn, timeoutMs = 3000, startedAt = Date.now()) {
-	if (fn()) {
-		return;
+/* eslint-disable max-lines-per-function */
+describe('degit bin', () => {
+	const mockDegit = vi.mocked(degit);
+	const mockPrompt = vi.mocked(enquirer.prompt);
+	async function waitForCondition(fn, timeoutMs = 3000, startedAt = Date.now()) {
+		if (fn()) {
+			return;
+		}
+
+		if (Date.now() >= startedAt + timeoutMs) {
+			assert.fail('timeout waiting for condition');
+		}
+
+		await new Promise((resolve) => {
+			setTimeout(resolve, 5);
+		});
+		return waitForCondition(fn, timeoutMs, startedAt);
 	}
 
-	if (Date.now() >= startedAt + timeoutMs) {
-		assert.fail('timeout waiting for condition');
+	function mockEventClone(eventName, message) {
+		const handlers = {};
+		mockDegit.mockReturnValue({
+			clone: vi.fn<() => Promise<void>>().mockImplementation(() => {
+				handlers[eventName]({ message });
+				return Promise.resolve();
+			}),
+			on: vi.fn<(ev: string, fn: (...args: any[]) => any) => any>(function on(ev, fn) {
+				handlers[ev] = fn;
+				return this;
+			}),
+		} as never);
+		return handlers;
 	}
 
-	await new Promise((resolve) => {
-		setTimeout(resolve, 5);
+	async function withCloneFailure(
+		args: Parameters<typeof run>[2],
+		error: Error,
+		assertions: (
+			exitSpy: ReturnType<typeof vi.spyOn>,
+			errSpy: ReturnType<typeof vi.spyOn>,
+		) => void,
+	) {
+		mockDegit.mockReturnValue({
+			clone: vi.fn<() => Promise<never>>().mockReturnValue(Promise.reject(error)),
+			on: vi.fn<(...args: any[]) => any>().mockReturnThis(),
+		} as never);
+
+		const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as never);
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		try {
+			run('a/b', 'dest', args);
+			await waitForCondition(() => exitSpy.mock.calls.length > 0);
+			assert.equal(exitSpy.mock.calls[0][0], 1);
+			assertions(exitSpy, errSpy);
+		} finally {
+			exitSpy.mockRestore();
+			errSpy.mockRestore();
+		}
+	}
+
+	const binTmp = '.tmp/bin-suite';
+	const repoRoot = process.cwd();
+	const rootBin = path.join(repoRoot, 'degit');
+	const interactiveBase = path.join(process.cwd(), '.tmp', 'bin-suite-cache', 'github');
+
+	function clearInteractiveFixtures() {
+		fs.rmSync(interactiveBase, { force: true, recursive: true });
+	}
+	beforeEach(() => {
+		fs.rmSync(binTmp, { force: true, recursive: true });
+		clearInteractiveFixtures();
+		vi.clearAllMocks();
+		mockDegit.mockReturnValue({
+			clone: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+			on: vi.fn<(...args: any[]) => any>().mockReturnThis(),
+		} as never);
 	});
-	return waitForCondition(fn, timeoutMs, startedAt);
-}
 
-function mockEventClone(eventName, message) {
-	const handlers = {};
-	mockDegit.mockReturnValue({
-		clone: vi.fn().mockImplementation(() => {
-			handlers[eventName]({ message });
-			return Promise.resolve();
-		}),
-		on: vi.fn(function on(ev, fn) {
-			handlers[ev] = fn;
-			return this;
-		}),
-	} as never);
-	return handlers;
-}
+	afterEach(() => {
+		fs.rmSync(binTmp, { force: true, recursive: true });
+		clearInteractiveFixtures();
+	});
 
-async function withCloneFailure(
-	args: Parameters<typeof run>[2],
-	error: Error,
-	assertions: (exitSpy: ReturnType<typeof vi.spyOn>, errSpy: ReturnType<typeof vi.spyOn>) => void,
-) {
-	mockDegit.mockReturnValue({
-		clone: vi.fn().mockReturnValue(Promise.reject(error)),
-		on: vi.fn().mockReturnThis(),
-	} as never);
-
-	const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as never);
-	const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-	try {
-		run('a/b', 'dest', args);
-		await waitForCondition(() => exitSpy.mock.calls.length > 0);
-		assert.equal(exitSpy.mock.calls[0][0], 1);
-		assertions(exitSpy, errSpy);
-	} finally {
-		exitSpy.mockRestore();
-		errSpy.mockRestore();
-	}
-}
-
-const binTmp = '.tmp/bin-suite';
-const repoRoot = process.cwd();
-const rootBin = path.join(repoRoot, 'degit');
-const interactiveBase = path.join(process.cwd(), '.tmp', 'bin-suite-cache', 'github');
-
-function clearInteractiveFixtures() {
-	fs.rmSync(interactiveBase, { force: true, recursive: true });
-}
-beforeEach(async () => {
-	await rimraf(binTmp);
-	clearInteractiveFixtures();
-	vi.clearAllMocks();
-	mockDegit.mockReturnValue({
-		clone: vi.fn().mockResolvedValue(),
-		on: vi.fn().mockReturnThis(),
-	} as never);
-});
-
-afterEach(async () => {
-	await rimraf(binTmp);
-	clearInteractiveFixtures();
-});
-
-describe('degit bin help', () => {
 	it('runs the built root bin when --help is executed', () => {
 		const result = child_process.spawnSync('node', [rootBin, '--help'], {
 			env: {
@@ -132,7 +135,7 @@ describe('degit bin help', () => {
 			},
 			encoding: 'utf8',
 		});
-		const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+		const output = [result.stdout, result.stderr].join('');
 		assert.ok(output.length > 0);
 		assert.ok(output.includes('degit'));
 	});
@@ -142,9 +145,7 @@ describe('degit bin help', () => {
 		const orig = process.stdout.write.bind(process.stdout);
 		process.stdout.write = ((chunk, enc, cb) => {
 			chunks.push(String(chunk));
-			if (typeof cb === 'function') {
-				cb();
-			}
+			cb?.();
 			return true;
 		}) as typeof process.stdout.write;
 		try {
@@ -156,9 +157,7 @@ describe('degit bin help', () => {
 		assert.ok(out.length > 0);
 		assert.ok(out.includes('degit'));
 	});
-});
 
-describe('degit bin main clone args', () => {
 	it('invokes degit clone with options when argv supplies src and destination', async () => {
 		await main(['node', 'bin', 'user/repo', 'out', '-f']);
 		assert.equal(mockDegit.mock.calls.length, 1);
@@ -167,9 +166,7 @@ describe('degit bin main clone args', () => {
 		const instance = mockDegit.mock.results[0].value;
 		assert.equal(instance.clone.mock.calls[0][0], 'out');
 	});
-});
 
-describe('degit bin main interactive selection', () => {
 	it('ranks interactive repo choices by most recent access when argv omits src', async () => {
 		const recentRepo = path.join(base, 'github', 'user-b', 'repo-b');
 		const olderRepo = path.join(base, 'github', 'user-a', 'repo-a');
@@ -191,19 +188,16 @@ describe('degit bin main interactive selection', () => {
 			const srcQuestion = (
 				questions as Array<{ name?: string; choices?: Array<{ value: string }> }>
 			).find((question) => question.name === 'src');
-			if (srcQuestion) {
-				assert.deepEqual(
-					srcQuestion.choices.map((choice) => choice.value),
-					['github:user-b/repo-b#main', 'github:user-a/repo-a#main'],
-				);
-				return {
-					cache: false,
-					dest: '.tmp/bin-suite/from-interactive',
-					src: 'github:user-b/repo-b#main',
-				};
-			}
-
-			return {};
+			assert.ok(srcQuestion);
+			assert.deepEqual(
+				srcQuestion.choices.map((choice) => choice.value),
+				['github:user-b/repo-b#main', 'github:user-a/repo-a#main'],
+			);
+			return Promise.resolve({
+				cache: false,
+				dest: '.tmp/bin-suite/from-interactive',
+				src: 'github:user-b/repo-b#main',
+			});
 		});
 
 		await main(['node', 'bin']);
@@ -217,13 +211,11 @@ describe('degit bin main interactive selection', () => {
 			'.tmp/bin-suite/from-interactive',
 		);
 	});
-});
 
-describe('degit bin main mode forwarding', () => {
 	it('forwards explicit git mode when argv passes --mode=git', async () => {
 		mockDegit.mockReturnValue({
-			clone: vi.fn().mockResolvedValue(),
-			on: vi.fn().mockReturnThis(),
+			clone: vi.fn<() => Promise<void>>(() => Promise.resolve()),
+			on: vi.fn<(...args: any[]) => any>().mockReturnThis(),
 		} as never);
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		try {
@@ -236,8 +228,7 @@ describe('degit bin main mode forwarding', () => {
 			warnSpy.mockRestore();
 		}
 	});
-});
-describe('degit bin run clone failures', () => {
+
 	it('exits with status 1 when the clone promise rejects', async () => {
 		const err = Object.assign(new Error('clone failed'), { original: 'nested failure' });
 
@@ -268,8 +259,7 @@ describe('degit bin run clone failures', () => {
 			},
 		);
 	});
-});
-describe('degit bin run info events', () => {
+
 	it('prints a verbose hint to stdout when an info event fires', async () => {
 		mockEventClone('info', 'options.verbose enabled');
 		const outSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -278,13 +268,12 @@ describe('degit bin run info events', () => {
 			await waitForCondition(() =>
 				outSpy.mock.calls.some((c) => String(c[0]).includes('--verbose')),
 			);
+			expect(outSpy).toHaveBeenCalled();
 		} finally {
 			outSpy.mockRestore();
 		}
 	});
-});
 
-describe('degit bin run warn events', () => {
 	it('prints a force hint to stderr when a warn event fires', async () => {
 		mockEventClone('warn', 'options.force suggested');
 		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -293,8 +282,10 @@ describe('degit bin run warn events', () => {
 			await waitForCondition(() =>
 				warnSpy.mock.calls.some((c) => String(c[0]).includes('--force')),
 			);
+			expect(warnSpy).toHaveBeenCalled();
 		} finally {
 			warnSpy.mockRestore();
 		}
 	});
 });
+/* eslint-enable max-lines-per-function */

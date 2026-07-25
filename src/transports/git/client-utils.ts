@@ -1,5 +1,6 @@
 import { DegitError } from '../../shared/utils.js';
 import type { Ref } from '../../domain/types.js';
+export type { Ref };
 import type { Repo } from '../../domain/repo.js';
 
 type GitPlan = {
@@ -12,8 +13,8 @@ export function getGitUrl(repo: Repo, transport: Repo['transport'] = repo.transp
 	return transport === 'ssh' ? repo.ssh : repo.url;
 }
 
-function isCommitHash(ref: string) {
-	return /^[0-9a-f]{7,40}$/i.test(ref);
+export function isCommitHash(ref: string) {
+	return /^[0-9a-f]{7,40}$/iu.test(ref);
 }
 
 export function normalizeGitRef(ref: string) {
@@ -82,7 +83,7 @@ function mapRemoteRef(refName: string, refHash: string): Ref {
 		};
 	}
 
-	const match = /refs\/([^/]+)\/(.+)/.exec(refName);
+	const match = /refs\/([^/]+)\/(.+)/u.exec(refName);
 	if (!match) {
 		throw new DegitError(`could not parse ${refName}`, {
 			code: 'BAD_REF',
@@ -129,13 +130,13 @@ export function parseGitLsRemoteOutput(output: string): Ref[] {
 	const refs = new Map<string, Ref>();
 	const symrefs = new Map<string, string>();
 
-	for (const rawLine of output.split(/\r?\n/)) {
+	for (const rawLine of output.split(/\r?\n/u)) {
 		const line = rawLine.trim();
 		if (!line) {
 			continue;
 		}
 
-		const symrefMatch = /^ref:\s+(.+)\t(.+)$/.exec(line);
+		const symrefMatch = /^ref:\s+(.+)\t(.+)$/u.exec(line);
 		if (symrefMatch) {
 			symrefs.set(symrefMatch[2], symrefMatch[1]);
 			continue;

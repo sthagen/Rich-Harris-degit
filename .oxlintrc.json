@@ -1,6 +1,12 @@
 {
 	"$schema": "./node_modules/oxlint/configuration_schema.json",
-	"jsPlugins": ["eslint-plugin-security"],
+	"jsPlugins": [
+		"eslint-plugin-security",
+		"./scripts/oxlint-test-guidelines.js",
+		"./scripts/oxlint-repo-guidelines.js"
+	],
+	"plugins": ["import", "node", "promise", "vitest"],
+	"options": { "denyWarnings": true },
 	"rules": {
 		"security/detect-bidi-characters": "error",
 		"security/detect-buffer-noassert": "error",
@@ -15,12 +21,16 @@
 		"security/detect-object-injection": "error",
 		"security/detect-possible-timing-attacks": "error",
 		"security/detect-pseudoRandomBytes": "error",
-		"security/detect-unsafe-regex": "error"
+		"security/detect-unsafe-regex": "error",
+		"oxlint-repo-guidelines/no-more-docs": "error"
 	},
 	"overrides": [
 		{
 			"files": ["test/**"],
 			"rules": {
+				"oxlint-test-guidelines/file-name": "error",
+				"oxlint-test-guidelines/one-describe-per-file": "error",
+				"oxlint-test-guidelines/title-when": "error",
 				"security/detect-bidi-characters": "off",
 				"security/detect-buffer-noassert": "off",
 				"security/detect-child-process": "off",

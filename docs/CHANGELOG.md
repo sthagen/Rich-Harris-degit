@@ -1,5 +1,30 @@
 # degit changelog
 
+## 3.6.3
+
+- Accept full subdirectory URLs containing branch path segments such as `/tree/main/...` ([#370](https://github.com/Rich-Harris/degit/issues/370)).
+
+## 3.6.2
+
+- Fix Bitbucket subdirectory clones that silently create an empty directory ([#371](https://github.com/Rich-Harris/degit/issues/371)).
+
+## 3.6.1
+
+- Load `degit.json` as JSON instead of an executable module.
+- Fix HTTPS clones with explicit refs throwing a `ReferenceError`.
+
+## 3.6.0
+
+- Add `gitlab://host/user/repo` syntax for cloning from self-hosted GitLab instances (thanks to @dnldsht for the original PR #361).
+
+## 3.5.1
+
+- Fix GitLab archive URL format and centralize provider templates (thanks to @satotake for the original PR #335).
+
+## 3.5.0
+
+- Add a `search_replace` action for `degit.json` (thanks to @Tythos for the original PR #365).
+
 ## 3.4.7
 
 - Gate clone error details behind `--verbose`.
@@ -37,7 +62,7 @@
 
 ## 3.3.2
 
-- Retry corrupt tarball downloads ([#313](https://github.com/Rich-Harris/degit/issues/313)).
+- Retry corrupt tarball downloads (issue #313).
 
 ## 3.3.1
 

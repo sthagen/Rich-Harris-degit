@@ -27,9 +27,7 @@ See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for how to contribute. [docs/SE
 
 `bun run test` runs the unit tests in `test/unit/**/*.test.ts` and the public integration tests in `test/integration/public.test.ts`, excluding `test/integration/private.test.ts`. Use `bun run test:integration` for the integration suite.
 
-`bun run perf:ci` runs the fixture-backed performance gate that CI uses to catch clone regressions.
-
-A small proof-of-concept docs-sync workflow also runs on PRs that change `src/**/*.ts` or `assets/help.md`, using OpenRouter through Claude Code Action. It expects `OPENROUTER_API_KEY` and `OPENROUTER_ANTHROPIC_BASE_URL` repository secrets.
+`bun run perf:ci` runs the fixture-backed performance gate that CI uses to catch clone regressions.9
 
 ## Installation
 
@@ -97,6 +95,12 @@ To clone a specific subdirectory instead of the entire repo, just add it to the 
 degit user/repo/subdirectory
 ```
 
+You can also paste a full GitHub URL to a subdirectory:
+
+```bash
+degit https://github.com/user/repo/tree/main/subdirectory
+```
+
 ### HTTPS proxying
 
 If you have an `https_proxy` environment variable, Degit will use it.
@@ -151,7 +155,7 @@ emitter.clone('path/to/dest').then(() => {
 
 ## Actions
 
-You can manipulate repositories after they have been cloned with _actions_, specified in a `degit.json` file that lives at the top level of the working directory. Currently, there are two actions — `clone` and `remove`. Additional actions may be added in future.
+You can manipulate repositories after they have been cloned with _actions_, specified in a `degit.json` file that lives at the top level of the working directory. Currently, there are three actions — `clone`, `search_replace`, and `remove`. Additional actions may be added in future.
 
 ### clone
 
@@ -166,6 +170,22 @@ You can manipulate repositories after they have been cloned with _actions_, spec
 ```
 
 This will clone `user/another-repo`, preserving the contents of the existing working directory. This allows you to, say, add a new README.md or starter file to a repo that you do not control. The cloned repo can contain its own `degit.json` actions.
+
+### search_replace
+
+```json
+// degit.json
+[
+	{
+		"action": "search_replace",
+		"files": ["package.json", "README.md"],
+		"pattern": "\\{\\{project_name\\}\\}",
+		"replacement": "PROJECT_NAME"
+	}
+]
+```
+
+This replaces every match of the regular expression in the listed files using the value of the named environment variable. `files` can be a single path or an array of paths, and each path is resolved relative to the destination. Paths outside the destination are skipped.
 
 ### remove
 

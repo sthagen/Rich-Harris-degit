@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as tar from 'tar';
+import { providerArchiveTemplates, type GitProvider } from '../../src/domain/repo.js';
 import degit from '../../src/index.js';
 import { createCopyFetch, createMockGit } from '../helpers.js';
 
@@ -14,7 +15,7 @@ function createProviderCase({ build, domain, publicSrc, redirectUrl, site, user 
 	const privateName = `${name}-private`;
 	const url = `https://${domain}/${user}/${name}`;
 	return {
-		...build({ domain, name, privateName, url, user }),
+		...build({ domain, name, privateName, site, url, user }),
 		name,
 		privateName,
 		publicSrc,
@@ -32,8 +33,10 @@ export const providerCases = [
 		redirectUrl: 'https://github.com/forbidden',
 		site: 'github',
 		user: 'Rich-Harris',
-		build: ({ domain, name, privateName, url, user }) => ({
-			archiveUrl: (hash) => `${url}/archive/${hash}.tar.gz`,
+		build: ({ domain, name, privateName, site, url, user }) => ({
+			archiveRoot: `${name}-${refsHash}`,
+			archiveUrl: (hash) =>
+				providerArchiveTemplates[site as GitProvider]({ url, name }, hash),
 			gitSrc: `https://${domain}/${user}/${privateName}.git`,
 			lsRemote: `git ls-remote -- ${url}`,
 			ssh: `ssh://git@${domain}/${user}/${name}`,
@@ -45,9 +48,26 @@ export const providerCases = [
 		redirectUrl: 'https://gitlab.com/forbidden',
 		site: 'gitlab',
 		user: 'Rich-Harris',
-		build: ({ domain, name, privateName, url, user }) => ({
-			archiveUrl: (hash) => `${url}/repository/archive.tar.gz?ref=${hash}`,
+		build: ({ domain, name, privateName, site, url, user }) => ({
+			archiveRoot: `${name}-${refsHash}`,
+			archiveUrl: (hash) =>
+				providerArchiveTemplates[site as GitProvider]({ url, name }, hash),
 			gitSrc: `gitlab:${user}/${privateName}`,
+			lsRemote: `git ls-remote -- ${url}`,
+			ssh: `ssh://git@${domain}/${user}/${name}`,
+		}),
+	}),
+	createProviderCase({
+		domain: 'git.example.com',
+		publicSrc: 'gitlab://git.example.com/Rich-Harris/degit-test-repo',
+		redirectUrl: 'https://git.example.com/forbidden',
+		site: 'gitlab',
+		user: 'Rich-Harris',
+		build: ({ domain, name, privateName, site, url, user }) => ({
+			archiveRoot: `${name}-${refsHash}`,
+			archiveUrl: (hash) =>
+				providerArchiveTemplates[site as GitProvider]({ url, name }, hash),
+			gitSrc: `gitlab://${domain}/${user}/${privateName}`,
 			lsRemote: `git ls-remote -- ${url}`,
 			ssh: `ssh://git@${domain}/${user}/${name}`,
 		}),
@@ -58,8 +78,10 @@ export const providerCases = [
 		redirectUrl: 'https://bitbucket.org/forbidden',
 		site: 'bitbucket',
 		user: 'Rich_Harris',
-		build: ({ domain, name, privateName, url, user }) => ({
-			archiveUrl: (hash) => `${url}/get/${hash}.tar.gz`,
+		build: ({ domain, name, privateName, site, url, user }) => ({
+			archiveRoot: `${user}-${name}-${refsHash.slice(0, 12)}`,
+			archiveUrl: (hash) =>
+				providerArchiveTemplates[site as GitProvider]({ url, name }, hash),
 			gitSrc: `bitbucket:${user}/${privateName}`,
 			lsRemote: `git ls-remote -- ${url}`,
 			ssh: `ssh://git@${domain}/${user}/${name}`,
@@ -71,8 +93,10 @@ export const providerCases = [
 		redirectUrl: 'https://git.sr.ht/forbidden',
 		site: 'git.sr.ht',
 		user: '~satotake',
-		build: ({ domain, name, privateName, url, user }) => ({
-			archiveUrl: (hash) => `${url}/archive/${hash}.tar.gz`,
+		build: ({ domain, name, privateName, site, url, user }) => ({
+			archiveRoot: `${name}-${refsHash}`,
+			archiveUrl: (hash) =>
+				providerArchiveTemplates[site as GitProvider]({ url, name }, hash),
 			gitSrc: `git.sr.ht/${user}/${privateName}`,
 			lsRemote: `git ls-remote -- ${url}`,
 			ssh: `ssh://git@${domain}/${user}/${name}`,
@@ -80,16 +104,16 @@ export const providerCases = [
 	}),
 ];
 
-function createArchiveRootFixture(rootName) {
-	fs.mkdirSync('.tmp/index-suite', { recursive: true });
-	const archiveDir = fs.mkdtempSync(path.join('.tmp/index-suite', 'archive-'));
+function createArchiveRootFixture(rootName, archiveBase = '.tmp/index-suite') {
+	fs.mkdirSync(archiveBase, { recursive: true });
+	const archiveDir = fs.mkdtempSync(path.join(archiveBase, 'archive-'));
 	const archiveRoot = path.join(archiveDir, rootName);
 
 	return { archiveDir, archiveRoot };
 }
 
-export async function createArchiveFixture(rootName) {
-	const { archiveDir, archiveRoot } = createArchiveRootFixture(rootName);
+export async function createArchiveFixture(rootName, archiveBase) {
+	const { archiveDir, archiveRoot } = createArchiveRootFixture(rootName, archiveBase);
 
 	fs.mkdirSync(path.join(archiveRoot, 'packages/app/lib'), { recursive: true });
 	fs.writeFileSync(path.join(archiveRoot, 'packages/app/index.js'), 'export default 1\n');
@@ -102,8 +126,8 @@ export async function createArchiveFixture(rootName) {
 	return archiveFile;
 }
 
-async function createArchiveWithFileFixture(rootName, relativePath, contents) {
-	const { archiveDir, archiveRoot } = createArchiveRootFixture(rootName);
+async function createArchiveWithFileFixture(rootName, relativePath, contents, archiveBase) {
+	const { archiveDir, archiveRoot } = createArchiveRootFixture(rootName, archiveBase);
 
 	fs.mkdirSync(path.dirname(path.join(archiveRoot, relativePath)), { recursive: true });
 	fs.writeFileSync(path.join(archiveRoot, relativePath), contents);
@@ -114,11 +138,12 @@ async function createArchiveWithFileFixture(rootName, relativePath, contents) {
 	return archiveFile;
 }
 
-export function createArchiveWithGitLfsPointerFixture(rootName) {
+export function createArchiveWithGitLfsPointerFixture(rootName, archiveBase) {
 	return createArchiveWithFileFixture(
 		rootName,
 		'packages/app/asset.bin',
 		'version https://git-lfs.github.com/spec/v1\noid sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\nsize 1234\n',
+		archiveBase,
 	);
 }
 

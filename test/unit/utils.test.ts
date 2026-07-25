@@ -5,7 +5,8 @@ import path from 'node:path';
 import { describe, it, vi } from 'vitest';
 import { fetch, resolveBase, stashFiles, unstashFiles } from '../../src/shared/utils.js';
 
-describe('resolveBase', () => {
+/* eslint-disable max-lines-per-function */
+describe('shared utils', () => {
 	it('uses XDG_CACHE_HOME on linux when it is set', () => {
 		assert.equal(
 			resolveBase({
@@ -28,7 +29,7 @@ describe('resolveBase', () => {
 		);
 	});
 
-	it('uses the macOS cache directory on darwin', () => {
+	it('uses the macOS cache directory when the platform is darwin', () => {
 		assert.equal(
 			resolveBase({
 				env: { XDG_CACHE_HOME: '/tmp/cache' },
@@ -39,7 +40,7 @@ describe('resolveBase', () => {
 		);
 	});
 
-	it('uses LOCALAPPDATA on windows', () => {
+	it('uses LOCALAPPDATA when the platform is windows', () => {
 		assert.equal(
 			resolveBase({
 				env: { LOCALAPPDATA: 'C:/Users/user/AppData/Local' },
@@ -49,10 +50,8 @@ describe('resolveBase', () => {
 			path.join('C:/Users/user/AppData/Local', 'degit'),
 		);
 	});
-});
 
-describe('stashFiles and unstashFiles', () => {
-	it('stashes and unstashes nested directories with degit.json excluded from restore', () => {
+	it('stashes and unstashes nested directories when degit.json is excluded from restore', () => {
 		const root = fs.mkdtempSync(path.join(process.cwd(), 'stash-'));
 		const cacheDir = path.join(root, 'cache');
 		const dest = path.join(root, 'dest');
@@ -88,15 +87,11 @@ describe('stashFiles and unstashFiles', () => {
 			fs.rmSync(root, { force: true, recursive: true });
 		}
 	});
-});
 
-describe('fetch', () => {
 	it('resumes redirect responses when following a redirected archive fetch', async () => {
 		const createWriteStreamSpy = vi.spyOn(fs, 'createWriteStream').mockReturnValue({
 			on(event: string, handler: () => void) {
-				if (event === 'finish') {
-					queueMicrotask(handler);
-				}
+				queueMicrotask(handler);
 
 				return this;
 			},
@@ -104,27 +99,34 @@ describe('fetch', () => {
 
 		const response1 = {
 			headers: { location: 'https://example.com/archive.tar.gz' },
-			pipe: vi.fn(),
-			resume: vi.fn(),
+			pipe: vi.fn<(...args: any[]) => any>(),
+			resume: vi.fn<(...args: any[]) => any>(),
 			statusCode: 302,
 			statusMessage: 'Found',
 		};
 		const response2 = {
 			headers: {},
-			pipe: vi.fn((stream) => stream),
-			resume: vi.fn(),
+			pipe: vi.fn<(...args: any[]) => any>((stream) => stream),
+			resume: vi.fn<(...args: any[]) => any>(),
 			statusCode: 200,
 			statusMessage: 'OK',
 		};
 
-		const getSpy = vi.spyOn(https, 'get').mockImplementation(((options, callback) => {
-			callback((getSpy.mock.calls.length === 1 ? response1 : response2) as never);
-			return {
-				on() {
-					return this;
-				},
-			};
-		}) as never);
+		const request = () => ({
+			on() {
+				return this;
+			},
+		});
+		const getSpy = vi
+			.spyOn(https, 'get')
+			.mockImplementationOnce(((options, callback) => {
+				callback(response1 as never);
+				return request();
+			}) as never)
+			.mockImplementation(((options, callback) => {
+				callback(response2 as never);
+				return request();
+			}) as never);
 
 		try {
 			await fetch('https://example.com/archive.tar.gz', '/tmp/degit-fetch-test.tar.gz');
@@ -137,3 +139,4 @@ describe('fetch', () => {
 		}
 	});
 });
+/* eslint-enable max-lines-per-function */

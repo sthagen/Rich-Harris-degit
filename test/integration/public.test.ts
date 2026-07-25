@@ -1,10 +1,7 @@
 import assert from 'node:assert';
 import fs from 'node:fs';
 import path from 'node:path';
-import { sync as rimraf } from 'rimraf';
 import { createIntegrationRunner } from './runner.js';
-
-const describeIntegration = describe;
 
 const runner = createIntegrationRunner();
 
@@ -33,22 +30,24 @@ const publicRepos: IntegrationRepo[] = [
 	},
 	{
 		expectedFile: 'README.md',
+		site: 'bitbucket-subdirectory',
+		src: 'bitbucket:cxcompany/public-examples/transaction-webhook-azure-functions#057c5ca1dc16e04d37ecd154b242bac4e8f4b359',
+	},
+	{
+		expectedFile: 'README.md',
 		gitUrl: 'https://git.sr.ht/~showyourcode/public',
 		site: 'git.sr.ht',
 	},
 ];
 
-describeIntegration('public integration suite', () => {
+describe('public integration suite', () => {
 	for (const test of publicRepos) {
 		it(`clones the pinned ${test.site} repository when the integration suite runs`, async () => {
 			const integrationTmp = path.join('.tmp', 'integration-suite-public', test.site);
-			const source = test.src ?? test.gitUrl;
+			const source = [test.src, test.gitUrl].find(Boolean);
+			assert.ok(source, `integration repo ${test.site} is missing a source`);
 
-			if (!source) {
-				throw new Error(`integration repo ${test.site} is missing a source`);
-			}
-
-			await rimraf(integrationTmp);
+			fs.rmSync(integrationTmp, { force: true, recursive: true });
 
 			try {
 				await runner.clone(source, integrationTmp);
@@ -56,7 +55,7 @@ describeIntegration('public integration suite', () => {
 				assert.equal(fs.existsSync(path.join(integrationTmp, test.expectedFile)), true);
 				assert.equal(fs.readdirSync(integrationTmp).length > 0, true);
 			} finally {
-				await rimraf(integrationTmp);
+				fs.rmSync(integrationTmp, { force: true, recursive: true });
 			}
 		});
 	}
