@@ -6,6 +6,13 @@ import fuzzysearch from 'fuzzysearch';
 import mri from 'mri';
 import glob from 'tiny-glob/sync.js';
 import degit from './index.js';
+import {
+	handleAliasSubcommand,
+	handleListSubcommand,
+	handleUnaliasSubcommand,
+	loadAliases,
+	resolveAlias,
+} from './aliases.js';
 import { base, tryRequire } from './shared/utils.js';
 
 const dirname = import.meta.dirname;
@@ -23,6 +30,7 @@ type CliArgs = {
 	help?: boolean;
 	mode?: string;
 	verbose?: boolean;
+	version?: boolean;
 };
 
 type PromptResult = {
@@ -36,6 +44,7 @@ type ForceResult = {
 };
 
 type RunArgs = {
+	aliases?: Record<string, string>;
 	cache?: boolean;
 	force?: boolean;
 	mode?: string;
@@ -50,8 +59,9 @@ function parseCliArgs(argv: string[]) {
 			f: 'force',
 			m: 'mode',
 			v: 'verbose',
+			V: 'version',
 		},
-		boolean: ['force', 'cache', 'verbose'],
+		boolean: ['force', 'cache', 'verbose', 'version'],
 	}) as CliArgs;
 }
 
@@ -63,6 +73,21 @@ function displayHelp() {
 		.replaceAll(/`([^`]+)`/gu, (_match, value) => colors.cyan(value));
 
 	process.stdout.write(`\n${help}\n`);
+}
+
+function getVersion() {
+	for (const relativePath of ['../package.json', '../../package.json']) {
+		try {
+			const url = new URL(relativePath, import.meta.url);
+			const pkg = JSON.parse(fs.readFileSync(url, 'utf8')) as { version: string };
+
+			return pkg.version;
+		} catch {
+			// try next path
+		}
+	}
+
+	throw new Error('Could not find package.json');
 }
 
 function getInteractiveChoices(): Choice[] {
@@ -135,6 +160,22 @@ async function confirmOverwrite(): Promise<boolean> {
 	return force;
 }
 
+async function handleInteractiveClone() {
+	const options = await promptForSource();
+
+	const empty = !fs.existsSync(options.dest) || fs.readdirSync(options.dest).length === 0;
+
+	if (!empty && !(await confirmOverwrite())) {
+		console.error(colors.magenta('! Directory not empty — aborting'));
+		return;
+	}
+
+	run(options.src, options.dest, {
+		cache: options.cache,
+		force: true,
+	});
+}
+
 export async function main(argv: string[]) {
 	const args = parseCliArgs(argv);
 
@@ -145,24 +186,33 @@ export async function main(argv: string[]) {
 		return;
 	}
 
-	if (!src) {
-		const options = await promptForSource();
-
-		const empty = !fs.existsSync(options.dest) || fs.readdirSync(options.dest).length === 0;
-
-		if (!empty && !(await confirmOverwrite())) {
-			console.error(colors.magenta('! Directory not empty — aborting'));
-			return;
-		}
-
-		run(options.src, options.dest, {
-			cache: options.cache,
-			force: true,
-		});
+	if (args.version) {
+		process.stdout.write(`${getVersion()}\n`);
 		return;
 	}
 
-	run(src, dest, args);
+	if (src === 'alias') {
+		handleAliasSubcommand(args._);
+		return;
+	}
+
+	if (src === 'unalias') {
+		handleUnaliasSubcommand(args._);
+		return;
+	}
+
+	if (src === 'ls') {
+		handleListSubcommand();
+		return;
+	}
+
+	if (!src) {
+		await handleInteractiveClone();
+		return;
+	}
+
+	const aliases = loadAliases();
+	run(resolveAlias(aliases, src) ?? src, dest, { ...args, aliases });
 }
 
 /* eslint-enable security/detect-non-literal-fs-filename */

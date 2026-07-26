@@ -53,9 +53,21 @@ unless the `--force` option is used.
 Options:
 
 `--help`, `-h` Show this message
+`--version`, `-V` Show the version
 `--cache`, `-c` Only use local cache
 `--force`, `-f` Allow non-empty destination directory
 `--verbose`, `-v` Extra logging
+
+Alias commands:
+
+`degit alias <repo> <name>` Save an alias for a repository
+`degit unalias <name>` Remove a saved alias
+`degit ls` List saved aliases
+
+Example:
+
+`degit alias github:user/repo myRepo`
+`degit myRepo` Equivalent to `degit github:user/repo`
 
 Private repositories are handled automatically: degit uses the tarball path by default for HTTPS sources and falls back to SSH cloning when needed. SSH/private repos still require git.
 
