@@ -35,6 +35,10 @@ See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for how to contribute. [docs/SE
 npm install -g degit
 ```
 
+## Agent skill
+
+This repository includes a reusable [degit skill](skills/degit/SKILL.md) for agents that support `SKILL.md` files. Add it using your agent's skill installation flow, then ask the agent to download a repository or template. The skill helps it choose a source, ref, and destination; handle private repositories and aliases; and avoid overwriting a non-empty destination without confirmation.
+
 ## Usage
 
 ### Basics
@@ -101,9 +105,23 @@ You can also paste a full GitHub URL to a subdirectory:
 degit https://github.com/user/repo/tree/main/subdirectory
 ```
 
+### GitLab nested groups
+
+GitLab repositories inside nested groups are supported at runtime:
+
+```bash
+degit gitlab:gitlab-org/frontend/utils#v0.3.4
+```
+
+degit first tries the two-segment `user/repo` interpretation, so `user/repo/subdir` still means "clone `user/repo` and extract `subdir`". If that combination does not exist, it falls back to treating the path as a nested GitLab group.
+
 ### HTTPS proxying
 
 If you have an `https_proxy` environment variable, Degit will use it.
+
+### Cache behavior
+
+degit caches downloaded tar snapshots so you don't need to fetch them again. By default, it tries to resolve the latest ref from the network and falls back to the cached version if the network is unreachable. Use `--cache` (`-c`) to skip the network request entirely and only use a locally cached copy.
 
 ### Private repositories
 
@@ -156,6 +174,8 @@ emitter.clone('path/to/dest').then(() => {
 ## Actions
 
 You can manipulate repositories after they have been cloned with _actions_, specified in a `degit.json` file that lives at the top level of the working directory. Currently, there are three actions — `clone`, `search_replace`, and `remove`. Additional actions may be added in future.
+
+A [JSON Schema](schemas/degit.schema.json) is available for editor autocompletion and validation; map `degit.json` to it in your editor's JSON schema settings (e.g. VS Code's `json.schemas`).
 
 ### clone
 
