@@ -33,7 +33,8 @@ export type InfoCode =
 	| 'FILE_EXISTS'
 	| 'PROXY'
 	| 'DOWNLOADING'
-	| 'EXTRACTING';
+	| 'EXTRACTING'
+	| 'GLOB_NOT_ALLOWED';
 
 export type DegitErrorCode =
 	| 'DEST_NOT_EMPTY'
@@ -43,7 +44,13 @@ export type DegitErrorCode =
 	| 'UNSUPPORTED_HOST'
 	| 'BAD_REF'
 	| 'COULD_NOT_FETCH'
-	| 'MISSING_SUBDIR';
+	| 'MISSING_SUBDIR'
+	| 'MISSING_SRC'
+	| 'BAD_DIRECTIVES'
+	| 'MISSING_DEST'
+	| 'ENOTDIR'
+	| 'COULD_NOT_STAT'
+	| 'COULD_NOT_RESTORE';
 
 export type EventInfo = {
 	code?: InfoCode | DegitErrorCode;
@@ -52,6 +59,7 @@ export type EventInfo = {
 	repo?: Repo;
 	url?: string;
 	original?: unknown;
+	recoveryPath?: string;
 	ref?: string;
 	subdir?: string;
 };
@@ -79,15 +87,17 @@ export type Directive =
 	| {
 			action: 'remove';
 			files: string | string[];
+			allowGlobs?: boolean;
 	  };
 
 export type CloneDirective = Extract<Directive, { action: 'clone' }>;
 export type SearchReplaceDirective = Extract<Directive, { action: 'search_replace' }>;
 export type RemoveDirective = Extract<Directive, { action: 'remove' }>;
 
+export type DegitAction = CloneDirective;
+export type RemoveAction = RemoveDirective;
+
 export type Options = ConstructorOptions;
 export type ValidModes = 'tar' | 'git';
 export type Info = EventInfo;
 export type Action = Directive;
-export type DegitAction = CloneDirective;
-export type RemoveAction = RemoveDirective;

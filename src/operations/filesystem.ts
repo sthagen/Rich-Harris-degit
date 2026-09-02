@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import colors from 'yoctocolors';
-import { DegitError, degitConfigName } from '../shared/utils.js';
+import glob from 'tiny-glob/sync.js';
+import { DegitError, degitConfigName, safeResolve, tryReadJson } from '../shared/utils.js';
 import type { Directive, EventInfo, RemoveDirective } from '../domain/types.js';
 
 type Emit = (info: EventInfo) => void;
@@ -15,7 +16,7 @@ export function getDirectives(dest: string): Directive[] | false {
 			return false;
 		}
 
-		const directives = JSON.parse(fs.readFileSync(directivesPath, 'utf8'));
+		const directives = tryReadJson(directivesPath);
 		if (!Array.isArray(directives)) {
 			return false;
 		}
@@ -61,10 +62,36 @@ export function checkDirIsEmpty(
 	}
 }
 
+function isGlobPattern(file: string): boolean {
+	return /[*?{}[\]]/u.test(file);
+}
+
 export function removeFiles(dest: string, action: RemoveDirective, info: Emit, warn: Emit) {
 	const files = Array.isArray(action.files) ? action.files : [action.files];
 	const root = path.resolve(dest);
-	const removedFiles = files.flatMap((file) => removeFile(root, file, warn));
+	const removedFiles = files.flatMap((file) => {
+		if (isGlobPattern(file) && !action.allowGlobs) {
+			warn({
+				code: 'GLOB_NOT_ALLOWED',
+				message: `remove action uses glob pattern ${colors.bold(file)} but ${colors.bold('allowGlobs')} is not set, skipping`,
+			});
+			return [];
+		}
+
+		if (!safeResolve(root, file)) {
+			return removeFile(root, file, warn);
+		}
+
+		const matches = glob(file, { cwd: root, dot: true, flush: true });
+		const targets = matches.length > 0 ? matches : [file];
+
+		targets.sort(
+			(a, b) =>
+				path.normalize(b).split(path.sep).length - path.normalize(a).split(path.sep).length,
+		);
+
+		return targets.flatMap((target) => removeFile(root, target, warn));
+	});
 
 	if (removedFiles.length > 0) {
 		info({
@@ -74,11 +101,33 @@ export function removeFiles(dest: string, action: RemoveDirective, info: Emit, w
 	}
 }
 
-function removeFile(root: string, file: string, warn: Emit) {
-	const filePath = path.resolve(root, file);
-	const relativePath = path.relative(root, filePath);
+type PathCheckResult = { ok: true } | { ok: false; missing: boolean };
 
-	if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+function checkResolvedPath(root: string, filePath: string, isSymlink: boolean): PathCheckResult {
+	if (isSymlink) {
+		try {
+			const parentReal = fs.realpathSync(path.dirname(filePath));
+			const relativePath = path.relative(root, parentReal);
+			if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+				return { ok: false, missing: false };
+			}
+			return { ok: true };
+		} catch {
+			return { ok: false, missing: true };
+		}
+	}
+
+	try {
+		const realPath = fs.realpathSync(filePath);
+		return safeResolve(root, realPath) ? { ok: true } : { ok: false, missing: false };
+	} catch {
+		return { ok: false, missing: true };
+	}
+}
+
+function removeFile(root: string, file: string, warn: Emit) {
+	const filePath = safeResolve(root, file);
+	if (!filePath) {
 		warn({
 			code: 'FILE_OUTSIDE_DEST',
 			message: `action wants to remove ${colors.bold(file)} but it is outside the destination, skipping`,
@@ -86,7 +135,10 @@ function removeFile(root: string, file: string, warn: Emit) {
 		return [];
 	}
 
-	if (!fs.existsSync(filePath)) {
+	let stats: fs.Stats;
+	try {
+		stats = fs.lstatSync(filePath);
+	} catch {
 		warn({
 			code: 'FILE_DOES_NOT_EXIST',
 			message: `action wants to remove ${colors.bold(file)} but it does not exist`,
@@ -94,13 +146,18 @@ function removeFile(root: string, file: string, warn: Emit) {
 		return [];
 	}
 
-	if (fs.lstatSync(filePath).isDirectory()) {
-		fs.rmSync(filePath, { force: true, recursive: true });
-		return [`${file}/`];
+	const check = checkResolvedPath(root, filePath, stats.isSymbolicLink());
+	if (check.ok === false) {
+		warn({
+			code: check.missing ? 'FILE_DOES_NOT_EXIST' : 'FILE_OUTSIDE_DEST',
+			message: `action wants to remove ${colors.bold(file)} but ${check.missing ? 'it does not exist' : 'it resolves outside the destination, skipping'}`,
+		});
+		return [];
 	}
 
-	fs.unlinkSync(filePath);
-	return [file];
+	const isDir = stats.isDirectory();
+	fs.rmSync(filePath, { force: true, recursive: true });
+	return isDir ? [`${file}/`] : [file];
 }
 
 // eslint-disable-next-line max-lines-per-function
@@ -112,13 +169,10 @@ export function keepFiles(dest: string, files: string[] | undefined, warn: Emit)
 	const root = path.resolve(dest);
 	const keepFileSet = new Set<string>();
 	const keepDirSet = new Set<string>();
-	let hasUserKeeps = false;
 
 	for (const file of files) {
-		const filePath = path.resolve(root, file);
-		const relativePath = path.relative(root, filePath);
-
-		if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+		const filePath = safeResolve(root, file);
+		if (!filePath) {
 			warn({
 				code: 'FILE_OUTSIDE_DEST',
 				message: `action wants to keep ${colors.bold(file)} but it is outside the destination, skipping`,
@@ -140,10 +194,9 @@ export function keepFiles(dest: string, files: string[] | undefined, warn: Emit)
 		} else {
 			keepFileSet.add(filePath);
 		}
-		hasUserKeeps = true;
 	}
 
-	if (!hasUserKeeps) {
+	if (keepFileSet.size === 0 && keepDirSet.size === 0) {
 		warn({
 			code: 'NO_FILES_MATCHED',
 			message: `no requested files were found, keeping the entire destination`,
@@ -156,17 +209,17 @@ export function keepFiles(dest: string, files: string[] | undefined, warn: Emit)
 		if (fs.lstatSync(directivesPath).isFile()) {
 			keepFileSet.add(directivesPath);
 		}
-	} catch {
-		// degit.json is missing or not accessible
-	}
+	} catch {}
+
+	const keepDirInfo = [...keepDirSet].map((dir) => ({ dir, prefix: path.join(dir, path.sep) }));
 
 	function isKept(filePath: string): boolean {
 		if (keepFileSet.has(filePath)) {
 			return true;
 		}
 
-		for (const dir of keepDirSet) {
-			if (filePath === dir || filePath.startsWith(path.join(dir, ''))) {
+		for (const { dir, prefix } of keepDirInfo) {
+			if (filePath === dir || filePath.startsWith(prefix)) {
 				return true;
 			}
 		}

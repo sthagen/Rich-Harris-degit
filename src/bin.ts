@@ -1,10 +1,10 @@
 import fs from 'node:fs';
-import path from 'node:path';
 import colors from 'yoctocolors';
 import enquirer from 'enquirer';
 import fuzzysearch from 'fuzzysearch';
 import mri from 'mri';
 import glob from 'tiny-glob/sync.js';
+import { parse } from './domain/repo.js';
 import degit from './index.js';
 import {
 	handleAliasSubcommand,
@@ -13,9 +13,7 @@ import {
 	loadAliases,
 	resolveAlias,
 } from './aliases.js';
-import { base, tryRequire } from './shared/utils.js';
-
-const dirname = import.meta.dirname;
+import { base, DegitError, tryReadJson } from './shared/utils.js';
 
 type Choice = {
 	message: string;
@@ -30,6 +28,7 @@ type CliArgs = {
 	force?: boolean;
 	help?: boolean;
 	mode?: string;
+	'repo-name'?: boolean;
 	verbose?: boolean;
 	version?: boolean;
 };
@@ -61,17 +60,18 @@ function parseCliArgs(argv: string[]) {
 			f: 'force',
 			F: 'files',
 			m: 'mode',
+			r: 'repo-name',
 			v: 'verbose',
 			V: 'version',
 		},
-		boolean: ['force', 'cache', 'verbose', 'version'],
+		boolean: ['force', 'cache', 'repo-name', 'verbose', 'version'],
 		string: ['files', 'mode'],
 	}) as CliArgs;
 }
 
 function displayHelp() {
 	const help = fs
-		.readFileSync(path.join(dirname, '..', 'assets', 'help.md'), 'utf8')
+		.readFileSync(new URL('../assets/help.md', import.meta.url), 'utf8')
 		.replaceAll(/^(\s*)#+ (.+)/gmu, (_match, indent, title) => indent + colors.bold(title))
 		.replaceAll(/_([^_]+)_/gu, (_match, value) => colors.underline(value))
 		.replaceAll(/`([^`]+)`/gu, (_match, value) => colors.cyan(value));
@@ -80,18 +80,18 @@ function displayHelp() {
 }
 
 function getVersion() {
-	for (const relativePath of ['../package.json', '../../package.json']) {
-		try {
-			const url = new URL(relativePath, import.meta.url);
-			const pkg = JSON.parse(fs.readFileSync(url, 'utf8')) as { version: string };
-
-			return pkg.version;
-		} catch {
-			// try next path
-		}
+	try {
+		return (
+			JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
+				version: string;
+			}
+		).version;
+	} catch (error) {
+		throw new DegitError('Could not find package.json', {
+			code: 'COULD_NOT_FIND_PACKAGE',
+			original: error,
+		});
 	}
-
-	throw new Error('Could not find package.json');
 }
 
 function getInteractiveChoices(): Choice[] {
@@ -102,8 +102,7 @@ function getInteractiveChoices(): Choice[] {
 	glob('**/access.json', { cwd: base }).forEach((file) => {
 		const normalizedFile = file.replaceAll('\\', '/');
 		const [host, user, repo] = normalizedFile.split('/');
-		const json = fs.readFileSync(`${base}/${file}`, 'utf8');
-		const logs = JSON.parse(json) as Record<string, string | number>;
+		const logs = (tryReadJson(`${base}/${file}`) as Record<string, string | number>) ?? {};
 
 		Object.entries(logs).forEach(([ref, timestamp]) => {
 			const id = `${host}:${user}/${repo}#${ref}`;
@@ -114,7 +113,7 @@ function getInteractiveChoices(): Choice[] {
 	const getChoices = (file: string): Choice[] => {
 		const normalizedFile = file.replaceAll('\\', '/');
 		const [host, user, repo] = normalizedFile.split('/');
-		const entries = Object.entries(tryRequire(`${base}/${file}`) || {});
+		const entries = Object.entries(tryReadJson(`${base}/${file}`) ?? {});
 
 		return entries.map(([ref, hash]) => ({
 			message: `${host}:${user}/${repo}#${ref}`,
@@ -198,7 +197,7 @@ function normalizeFiles(files: string | string[] | boolean | undefined): string[
 export async function main(argv: string[]) {
 	const args = parseCliArgs(argv);
 
-	const [src, dest = '.'] = args._;
+	const [src, positionalDest] = args._;
 
 	if (args.help) {
 		displayHelp();
@@ -231,8 +230,10 @@ export async function main(argv: string[]) {
 	}
 
 	const aliases = loadAliases();
+	const resolvedSrc = resolveAlias(aliases, src) ?? src;
+	const dest = positionalDest ?? (args['repo-name'] ? parse(resolvedSrc).name : '.');
 	const files = normalizeFiles(args.files);
-	run(resolveAlias(aliases, src) ?? src, dest, { ...args, aliases, files });
+	run(resolvedSrc, dest, { ...args, aliases, files });
 }
 
 /* eslint-enable security/detect-non-literal-fs-filename */

@@ -1,13 +1,12 @@
 /* eslint-disable max-lines */
-import { mkdtemp, rm } from 'node:fs/promises';
+/* oxlint-disable import/max-dependencies */
+import { EventEmitter } from 'node:events';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import colors from 'yoctocolors';
+import { resolveAlias } from '../aliases.js';
 import { generateGitlabRepoCandidates, parse, type Repo } from '../domain/repo.js';
-
-function resolveAlias(aliases: Record<string, string>, name: string): string | undefined {
-	return Object.entries(aliases).find(([key]) => key === name)?.[1];
-}
-import { applyDirectives } from '../operations/directives.js';
+import { applyDirectives, type DirectiveContext } from '../operations/directives.js';
 import {
 	checkDirIsEmpty,
 	copyRepoSubdir,
@@ -15,24 +14,26 @@ import {
 	keepFiles,
 	removeFiles,
 } from '../operations/filesystem.js';
-import { cloneWithTar as cloneWithTarMode } from '../transports/tar/archive.js';
+import { cloneWithTar as cloneWithTarMode, type TarContext } from '../transports/tar/archive.js';
 import {
 	validModes,
+	type Action,
 	type ConstructorOptions,
 	type Directive,
 	type EventInfo,
 	type FetchFn,
+	type GitClient,
 	type RemoveDirective,
 	type ValidModes,
 } from '../domain/types.js';
-import type { GitClient } from '../domain/types.js';
 import { base, DegitError, fetch } from '../shared/utils.js';
-type InfoListener = (info: EventInfo) => void;
+
 function cloneSuccessMessage(user: string, name: string, ref: string, dest: string) {
 	const destination = dest === '.' ? '' : ` to ${dest}`;
 	return `cloned ${colors.bold(`${user}/${name}`)}#${colors.bold(ref)}${destination}`;
 }
-export class Degit {
+
+export class Degit extends EventEmitter {
 	aliases: Record<string, string>;
 	cache?: boolean;
 	files?: string[];
@@ -40,43 +41,44 @@ export class Degit {
 	mode: ValidModes;
 	verbose?: boolean;
 	proxy?: string;
-	repo: Repo;
+	repo?: Repo;
 	fetch: FetchFn;
 	git?: GitClient;
 	gitClientPromise?: Promise<GitClient>;
-	hasStashed: boolean;
-	private src: string;
-	private infoListeners: InfoListener[];
-	private warnListeners: InfoListener[];
+	private src?: string;
 
-	constructor(src: string, opts: ConstructorOptions = {}) {
+	constructor(src?: string, opts: ConstructorOptions = {}) {
+		super();
+
+		if (opts.mode && !validModes.has(opts.mode)) {
+			throw new Error(`Valid modes are ${[...validModes].join(', ')}`);
+		}
+
 		this.aliases = opts.aliases ?? {};
 		this.cache = opts.cache;
 		this.files = opts.files;
 		this.force = opts.force;
 		this.verbose = opts.verbose;
 		this.proxy = process.env.https_proxy;
-		this.src = resolveAlias(this.aliases, src) ?? src;
-		this.repo = parse(this.src);
-		this.mode = opts.mode ?? this.repo.mode;
-		this.repo = { ...this.repo, mode: this.mode };
+
+		if (src === undefined) {
+			this.mode = opts.mode ?? 'tar';
+		} else {
+			const resolved = resolveAlias(this.aliases, src) ?? src;
+			if (typeof resolved !== 'string' || resolved === '') {
+				throw new DegitError('source must not be empty', { code: 'BAD_SRC' });
+			}
+			this.src = resolved;
+			this.repo = parse(resolved);
+			this.mode = opts.mode ?? this.repo.mode;
+			this.repo = { ...this.repo, mode: this.mode };
+		}
+
 		this.fetch = opts.fetch || fetch;
 		this.git = opts.git;
-		this.hasStashed = false;
-		this.infoListeners = [];
-		this.warnListeners = [];
-
-		if (opts.mode && !validModes.has(opts.mode)) {
-			throw new Error(`Valid modes are ${[...validModes].join(', ')}`);
-		}
-	}
-	on(eventName: 'info' | 'warn', listener: InfoListener) {
-		if (eventName === 'info') {
-			this.infoListeners.push(listener);
-		} else {
-			this.warnListeners.push(listener);
-		}
-		return this;
+		this.info = this.info.bind(this);
+		this.warn = this.warn.bind(this);
+		this.verboseInfo = this.verboseInfo.bind(this);
 	}
 	getGitClient(): Promise<GitClient> {
 		if (this.git) {
@@ -96,9 +98,13 @@ export class Degit {
 		return getDirectives(dest);
 	}
 	async clone(dest: string): Promise<void> {
-		checkDirIsEmpty(dest, this.force, this.info.bind(this), this.verboseInfo.bind(this));
+		if (!this.repo) {
+			throw new DegitError('clone() requires a source', { code: 'MISSING_SRC' });
+		}
+
+		checkDirIsEmpty(dest, this.force, this.info, this.verboseInfo);
 		await this.cloneToDestination(dest);
-		keepFiles(dest, this.files, this.warn.bind(this));
+		keepFiles(dest, this.files, this.warn);
 		this.info({
 			code: 'SUCCESS',
 			dest,
@@ -108,13 +114,13 @@ export class Degit {
 		await this.runDirectives(dest);
 	}
 	remove(dest: string, action: RemoveDirective) {
-		removeFiles(dest, action, this.info.bind(this), this.warn.bind(this));
+		removeFiles(dest, action, this.info, this.warn);
 	}
 	info(info: EventInfo) {
-		this.emitEvent('info', info);
+		this.emit('info', info);
 	}
 	warn(info: EventInfo) {
-		this.emitEvent('warn', info);
+		this.emit('warn', info);
 	}
 	verboseInfo(info: EventInfo) {
 		if (this.verbose) {
@@ -184,18 +190,38 @@ export class Degit {
 		}
 		return refs.find((ref) => ref.type === 'branch' && ref.hash)?.hash;
 	}
+	private getRepo(): Repo {
+		if (!this.repo) {
+			throw new DegitError('operation requires a source', { code: 'MISSING_SRC' });
+		}
+		return this.repo;
+	}
 	async cloneWithTar(dest: string): Promise<void> {
-		await cloneWithTarMode(this, this.getRepoDir(), dest);
+		const repo = this.getRepo();
+		const context: TarContext = {
+			cache: this.cache,
+			cloneWithGit: (d, ref) => this.cloneWithGit(d, ref),
+			fetch: this.fetch,
+			getHash: (childRepo, cached) => this.getHash(childRepo, cached),
+			getHashFromCache: (childRepo, cached) => this.getHashFromCache(childRepo, cached),
+			proxy: this.proxy,
+			repo,
+			verboseInfo: this.verboseInfo,
+			warn: this.warn,
+		};
+		await cloneWithTarMode(context, this.getRepoDir(), dest);
 	}
-	async cloneWithGit(dest: string, ref = this.repo.ref): Promise<void> {
-		await (await this.getGitClient()).clone(this.repo, dest, ref, this.repo.transport);
+	async cloneWithGit(dest: string, ref?: string): Promise<void> {
+		const repo = this.getRepo();
+		await (await this.getGitClient()).clone(repo, dest, ref ?? repo.ref, repo.transport);
 	}
-	async cloneGitToDestination(dest: string, ref = this.repo.ref): Promise<void> {
-		if (this.repo.subdir) {
+	async cloneGitToDestination(dest: string, ref?: string): Promise<void> {
+		const repo = this.getRepo();
+		if (repo.subdir) {
 			const tmp = await mkdtemp('degit-git-');
 			try {
 				await this.cloneWithGit(tmp, ref);
-				copyRepoSubdir(tmp, dest, this.repo.subdir);
+				copyRepoSubdir(tmp, dest, repo.subdir);
 			} finally {
 				await rm(tmp, { force: true, recursive: true });
 			}
@@ -210,19 +236,15 @@ export class Degit {
 		const code = (error as { code?: string }).code;
 		return code === 'COULD_NOT_DOWNLOAD' && !this.cache;
 	}
-	private emitEvent(eventName: 'info' | 'warn', info: EventInfo) {
-		const listeners = eventName === 'info' ? this.infoListeners : this.warnListeners;
-		for (const listener of listeners) {
-			listener(info);
-		}
-	}
 	private getRepoDir() {
-		return path.join(base, this.repo.site, this.repo.user, this.repo.name);
+		const repo = this.getRepo();
+		return path.join(base, repo.site, repo.user, repo.name);
 	}
 	private async doCloneToDestination(dest: string) {
+		const repo = this.getRepo();
 		if (this.mode === 'git') {
-			const hash = await this.getHash(this.repo, {});
-			await this.cloneGitToDestination(dest, hash || this.repo.ref);
+			const hash = await this.getHash(repo, {});
+			await this.cloneGitToDestination(dest, hash || repo.ref);
 			return;
 		}
 		try {
@@ -238,12 +260,9 @@ export class Degit {
 		}
 	}
 	private async cloneToDestination(dest: string) {
-		if (this.repo.site === 'gitlab') {
-			await this.tryGitlabProject(
-				generateGitlabRepoCandidates(this.src, this.repo),
-				dest,
-				this.repo,
-			);
+		const repo = this.getRepo();
+		if (repo.site === 'gitlab') {
+			await this.tryGitlabProject(generateGitlabRepoCandidates(this.src!, repo), dest, repo);
 		} else {
 			await this.doCloneToDestination(dest);
 		}
@@ -291,15 +310,53 @@ export class Degit {
 	}
 	private async runDirectives(dest: string) {
 		const directives = this.getDirectives(dest);
-		if (!directives) {
-			return;
+		if (directives) {
+			await this.doActions(directives, dest);
 		}
-		await applyDirectives(
-			this,
-			directives,
-			this.getRepoDir(),
-			dest,
-			(src, opts) => new Degit(src, opts),
-		);
 	}
+	private async getActionsStagingDir(): Promise<string> {
+		// eslint-disable-next-line security/detect-non-literal-fs-filename
+		await mkdir(base, { recursive: true });
+		return mkdtemp(path.join(base, 'actions-'));
+	}
+
+	async doActions(directives: Action[], dest: string): Promise<void> {
+		if (!Array.isArray(directives)) {
+			throw new DegitError('directives must be an array', { code: 'BAD_DIRECTIVES' });
+		}
+		const context: DirectiveContext = {
+			aliases: this.aliases,
+			cache: this.cache,
+			fetch: this.fetch,
+			getGitClient: () => this.getGitClient(),
+			getStagingDir: async () => (context.stagingDir ??= await this.getActionsStagingDir()),
+			hasStashed: false,
+			info: this.info,
+			verbose: this.verbose,
+			warn: this.warn,
+		};
+		try {
+			await applyDirectives(context, directives, dest, (src, opts) => new Degit(src, opts));
+		} finally {
+			if (context.stagingDir) {
+				if (context.hasStashed) {
+					this.warn({
+						message: `actions staging left for recovery: ${context.stagingDir}`,
+						recoveryPath: context.stagingDir,
+					});
+				} else {
+					await rm(context.stagingDir, { force: true, recursive: true }).catch((error) =>
+						this.warn({
+							message: `could not remove actions staging: ${context.stagingDir}`,
+							original: error,
+						}),
+					);
+				}
+			}
+		}
+	}
+}
+
+export interface Degit {
+	on(eventName: 'info' | 'warn', listener: (info: EventInfo) => void): this;
 }

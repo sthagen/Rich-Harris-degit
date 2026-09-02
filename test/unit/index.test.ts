@@ -5,7 +5,9 @@ import path from 'node:path';
 import degit from '../../src/index.js';
 import { generateGitlabRepoCandidates, parse } from '../../src/domain/repo.js';
 import { Degit } from '../../src/core/orchestrator.js';
+import { DegitError } from '../../src/shared/utils.js';
 import { providerCases } from './index-support.js';
+import type { Directive } from '../../src/domain/types.js';
 
 const { suiteCache, suiteTmp } = vi.hoisted(() => ({
 	suiteCache: '.tmp/index-main-suite-cache',
@@ -23,6 +25,15 @@ vi.mock('../../src/shared/utils.js', async () => {
 	};
 });
 
+function makeEscapeWorkspace() {
+	const workspace = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+	const dest = path.join(workspace, 'dest');
+	const sibling = path.join(workspace, 'sibling');
+	fs.mkdirSync(dest, { recursive: true });
+	fs.mkdirSync(sibling, { recursive: true });
+	return { workspace, dest, sibling };
+}
+
 /* eslint-disable max-lines-per-function */
 describe('degit index', () => {
 	beforeEach(() => {
@@ -32,6 +43,7 @@ describe('degit index', () => {
 	afterEach(() => {
 		fs.rmSync(suiteTmp, { force: true, recursive: true });
 		fs.rmSync(suiteCache, { force: true, recursive: true });
+		delete process.env.PROJECT_NAME;
 	});
 	it('exports a usable JS library when importing the built entrypoint', async () => {
 		const builtEntryPoint = path.resolve(process.cwd(), 'dist/index.js');
@@ -40,6 +52,7 @@ describe('degit index', () => {
 
 		assert.equal(typeof builtDegit, 'function');
 		assert.equal(typeof instance.clone, 'function');
+		assert.equal(typeof instance.doActions, 'function');
 		assert.equal(typeof instance.on, 'function');
 	});
 
@@ -174,14 +187,10 @@ describe('degit index', () => {
 		}
 	});
 	it('warns and skips paths that escape the destination when removing files', () => {
-		const workspace = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
-		const dest = path.join(workspace, 'dest');
-		const sibling = path.join(workspace, 'sibling');
+		const { workspace, dest, sibling } = makeEscapeWorkspace();
 		const warnings: string[] = [];
 
 		try {
-			fs.mkdirSync(dest, { recursive: true });
-			fs.mkdirSync(sibling, { recursive: true });
 			fs.writeFileSync(path.join(sibling, 'secret.txt'), 'secret\n');
 
 			const emitter = degit('Rich-Harris/degit-test-repo');
@@ -198,6 +207,188 @@ describe('degit index', () => {
 			assert.match(warnings[0], /\.\.\/sibling/u);
 		} finally {
 			fs.rmSync(workspace, { force: true, recursive: true });
+		}
+	});
+	it('removes files matching a glob pattern when files contains a glob', () => {
+		const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+
+		try {
+			fs.writeFileSync(path.join(dest, 'a.md'), 'a\n');
+			fs.writeFileSync(path.join(dest, 'b.md'), 'b\n');
+			fs.writeFileSync(path.join(dest, 'keep.ts'), 'keep\n');
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.remove(dest, { action: 'remove', files: ['*.md'], allowGlobs: true });
+
+			assert.equal(fs.existsSync(path.join(dest, 'a.md')), false);
+			assert.equal(fs.existsSync(path.join(dest, 'b.md')), false);
+			assert.equal(fs.existsSync(path.join(dest, 'keep.ts')), true);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
+		}
+	});
+	it('removes nested dotfiles matching a glob when the glob targets a dotfolder', () => {
+		const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+
+		try {
+			fs.mkdirSync(path.join(dest, '.github'), { recursive: true });
+			fs.writeFileSync(path.join(dest, '.github', 'foo.md'), 'foo\n');
+			fs.writeFileSync(path.join(dest, '.github', 'bar.yml'), 'bar\n');
+			fs.writeFileSync(path.join(dest, 'README.md'), 'readme\n');
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.remove(dest, {
+				action: 'remove',
+				files: ['.github/**/*.md'],
+				allowGlobs: true,
+			});
+
+			assert.equal(fs.existsSync(path.join(dest, '.github', 'foo.md')), false);
+			assert.equal(fs.existsSync(path.join(dest, '.github', 'bar.yml')), true);
+			assert.equal(fs.existsSync(path.join(dest, 'README.md')), true);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
+		}
+	});
+	it('warns and skips glob patterns when allowGlobs is not set', () => {
+		const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+		const warnings: string[] = [];
+
+		try {
+			fs.writeFileSync(path.join(dest, 'a.md'), 'a\n');
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.on('warn', (event) => warnings.push(event.message));
+
+			emitter.remove(dest, { action: 'remove', files: ['*.md'] });
+
+			assert.equal(fs.existsSync(path.join(dest, 'a.md')), true);
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0], /allowGlobs/u);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
+		}
+	});
+	it('removes nested directory contents without spurious warnings when the glob matches descendants', () => {
+		const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+		const warnings: string[] = [];
+
+		try {
+			fs.mkdirSync(path.join(dest, 'nested', 'child'), { recursive: true });
+			fs.writeFileSync(path.join(dest, 'nested', 'child', 'file.txt'), 'nested\n');
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.on('warn', (event) => warnings.push(event.message));
+
+			emitter.remove(dest, { action: 'remove', files: ['nested/**'], allowGlobs: true });
+
+			assert.equal(fs.existsSync(path.join(dest, 'nested', 'child', 'file.txt')), false);
+			assert.equal(fs.existsSync(path.join(dest, 'nested', 'child')), false);
+			assert.equal(warnings.length, 0);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
+		}
+	});
+	it('warns and skips files that resolve outside the destination when they are reached through a symlink', () => {
+		const { workspace, dest, sibling } = makeEscapeWorkspace();
+		const warnings: string[] = [];
+
+		try {
+			fs.writeFileSync(path.join(sibling, 'keep.md'), 'keep\n');
+			fs.symlinkSync(sibling, path.join(dest, 'outside-link'));
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.on('warn', (event) => warnings.push(event.message));
+
+			emitter.remove(dest, {
+				action: 'remove',
+				files: ['outside-link/**/*.md'],
+				allowGlobs: true,
+			});
+
+			assert.equal(fs.existsSync(path.join(sibling, 'keep.md')), true);
+			assert.equal(warnings.length, 1);
+			assert.match(
+				warnings[0],
+				/action wants to remove .*outside the destination, skipping/u,
+			);
+		} finally {
+			fs.rmSync(workspace, { force: true, recursive: true });
+		}
+	});
+	it('removes a top-level directory symlink when it points outside the destination', () => {
+		const { workspace, dest, sibling } = makeEscapeWorkspace();
+
+		try {
+			fs.writeFileSync(path.join(sibling, 'keep.md'), 'keep\n');
+			fs.symlinkSync(sibling, path.join(dest, 'outside-link'));
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.remove(dest, { action: 'remove', files: ['outside-link'] });
+
+			assert.equal(fs.existsSync(path.join(dest, 'outside-link')), false);
+			assert.equal(fs.existsSync(path.join(sibling, 'keep.md')), true);
+		} finally {
+			fs.rmSync(workspace, { force: true, recursive: true });
+		}
+	});
+	it('removes a nested symlink without deleting its target when the target is inside the destination', () => {
+		const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+
+		try {
+			fs.mkdirSync(path.join(dest, 'dir'), { recursive: true });
+			fs.writeFileSync(path.join(dest, 'dir', 'real.md'), 'real\n');
+			fs.symlinkSync(path.join(dest, 'dir', 'real.md'), path.join(dest, 'dir', 'link.md'));
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.remove(dest, { action: 'remove', files: ['dir/link.md'] });
+
+			assert.equal(fs.existsSync(path.join(dest, 'dir', 'link.md')), false);
+			assert.equal(fs.existsSync(path.join(dest, 'dir', 'real.md')), true);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
+		}
+	});
+	it('warns and skips glob matches that escape the destination when the glob expands outside dest', () => {
+		const { workspace, dest, sibling } = makeEscapeWorkspace();
+		const warnings: string[] = [];
+
+		try {
+			fs.writeFileSync(path.join(sibling, 'secret.md'), 'secret\n');
+
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.on('warn', (event) => warnings.push(event.message));
+
+			emitter.remove(dest, {
+				action: 'remove',
+				files: ['../sibling/*.md'],
+				allowGlobs: true,
+			});
+
+			assert.equal(fs.existsSync(path.join(sibling, 'secret.md')), true);
+			assert.equal(warnings.length, 1);
+			assert.match(
+				warnings[0],
+				/action wants to remove .*outside the destination, skipping/u,
+			);
+		} finally {
+			fs.rmSync(workspace, { force: true, recursive: true });
+		}
+	});
+	it('warns about a missing exact file when a non-glob path does not exist', () => {
+		const dest = fs.mkdtempSync(path.join(process.cwd(), 'remove-'));
+		const warnings: string[] = [];
+
+		try {
+			const emitter = degit('Rich-Harris/degit-test-repo');
+			emitter.on('warn', (event) => warnings.push(event.message));
+
+			emitter.remove(dest, { action: 'remove', files: ['missing.txt'] });
+
+			assert.equal(warnings.length, 1);
+			assert.match(warnings[0], /action wants to remove .*but it does not exist/u);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
 		}
 	});
 	it('returns nested group candidates when the GitLab source has more than two path segments', () => {
@@ -353,6 +544,196 @@ describe('degit index', () => {
 				assert.equal(fs.existsSync(path.join(dest, 'degit.json')), false);
 			},
 		);
+	});
+
+	it('returns an instance with repo undefined and doActions as a function when called with no arguments', () => {
+		const emitter = degit();
+
+		assert.equal(emitter.repo, undefined);
+		assert.equal(typeof emitter.doActions, 'function');
+	});
+
+	function assertNoActionsCache() {
+		assert.equal(
+			fs.existsSync(suiteCache) &&
+				fs.readdirSync(suiteCache).some((name) => name.startsWith('actions-')),
+			false,
+		);
+	}
+
+	async function withDoActionsDest(callback: (dest: string) => Promise<void>) {
+		fs.mkdirSync(suiteTmp, { recursive: true });
+		const dest = fs.mkdtempSync(path.join(suiteTmp, 'doactions-'));
+		try {
+			await callback(dest);
+		} finally {
+			fs.rmSync(dest, { force: true, recursive: true });
+		}
+	}
+
+	it('rejects a missing destination when doActions has no clone directive', async () => {
+		const missingDest = path.join(suiteTmp, 'missing-dest');
+		fs.rmSync(missingDest, { force: true, recursive: true });
+
+		await assert.rejects(
+			async () =>
+				await degit().doActions(
+					[{ action: 'remove', files: ['x'] }] as Directive[],
+					missingDest,
+				),
+			(err: any) => err?.code === 'MISSING_DEST',
+		);
+	});
+
+	it('rejects a non-directory destination when doActions has no clone directive', async () => {
+		await withDoActionsDest(async (dest) => {
+			const fileDest = path.join(dest, 'not-a-dir');
+			fs.writeFileSync(fileDest, 'not a directory');
+
+			await assert.rejects(
+				async () =>
+					await degit().doActions(
+						[{ action: 'remove', files: ['x'] }] as Directive[],
+						fileDest,
+					),
+				(err: any) => err?.code === 'ENOTDIR',
+			);
+		});
+	});
+
+	it('doActions runs a remove directive when called without a source and cleans the staging directory', async () => {
+		await withDoActionsDest(async (dest) => {
+			fs.writeFileSync(path.join(dest, 'x'), 'x');
+
+			await degit().doActions([{ action: 'remove', files: ['x'] }] as Directive[], dest);
+
+			assert.equal(fs.existsSync(path.join(dest, 'x')), false);
+			assertNoActionsCache();
+		});
+	});
+
+	it('doActions runs a search_replace directive without a source when the PROJECT_NAME env var is set', async () => {
+		await withDoActionsDest(async (dest) => {
+			fs.writeFileSync(path.join(dest, 'x'), '{{project_name}}');
+
+			process.env.PROJECT_NAME = 'foo';
+
+			await degit().doActions(
+				[
+					{
+						action: 'search_replace',
+						files: ['x'],
+						pattern: '\\{\\{project_name\\}\\}',
+						replacement: 'PROJECT_NAME',
+					},
+				] as Directive[],
+				dest,
+			);
+
+			assert.equal(fs.readFileSync(path.join(dest, 'x'), 'utf8'), 'foo');
+			assertNoActionsCache();
+		});
+	});
+
+	it('clone() rejects with MISSING_SRC when called on a source-less instance', async () => {
+		await withDoActionsDest(async (dest) => {
+			await assert.rejects(
+				async () => await degit().clone(dest),
+				(err: any) => err?.code === 'MISSING_SRC',
+			);
+		});
+	});
+
+	it('rejects an empty string source with BAD_SRC when the source is an empty string', () => {
+		assert.throws(
+			() => degit(''),
+			(err: any) => err?.code === 'BAD_SRC',
+		);
+	});
+
+	it('doActions runs a second time when called on the same source-less instance', async () => {
+		await withDoActionsDest(async (dest) => {
+			fs.writeFileSync(path.join(dest, 'x'), 'x');
+
+			const stub = vi.spyOn(Degit.prototype, 'clone').mockImplementation((target: string) => {
+				fs.writeFileSync(path.join(target, 'y'), 'y');
+				return Promise.resolve();
+			});
+
+			try {
+				const emitter = degit();
+
+				await emitter.doActions(
+					[{ action: 'clone', src: 'user/repo' }] as Directive[],
+					dest,
+				);
+
+				assert.equal(fs.existsSync(path.join(dest, 'x')), true);
+				assert.equal(fs.existsSync(path.join(dest, 'y')), true);
+
+				await emitter.doActions([{ action: 'remove', files: ['y'] }] as Directive[], dest);
+
+				assert.equal(fs.existsSync(path.join(dest, 'x')), true);
+				assert.equal(fs.existsSync(path.join(dest, 'y')), false);
+			} finally {
+				stub.mockRestore();
+			}
+		});
+	});
+
+	it('doActions restores the destination and cleans up when a clone directive fails', async () => {
+		await withDoActionsDest(async (dest) => {
+			fs.writeFileSync(path.join(dest, 'x'), 'x');
+
+			const stub = vi.spyOn(Degit.prototype, 'clone').mockImplementation(() => {
+				throw new DegitError('mock clone failure', { code: 'COULD_NOT_DOWNLOAD' });
+			});
+
+			try {
+				await assert.rejects(
+					async () =>
+						await degit().doActions(
+							[{ action: 'clone', src: 'user/repo' }] as Directive[],
+							dest,
+						),
+					(err: any) => err?.code === 'COULD_NOT_DOWNLOAD',
+				);
+
+				assert.equal(fs.existsSync(path.join(dest, 'x')), true);
+				assertNoActionsCache();
+			} finally {
+				stub.mockRestore();
+			}
+		});
+	});
+
+	it('removes a clone-created file when a remove directive targets it after a clone', async () => {
+		const stub = vi.spyOn(Degit.prototype, 'clone').mockImplementation((target: string) => {
+			fs.writeFileSync(path.join(target, 'README.md'), 'clone readme');
+			fs.writeFileSync(path.join(target, 'LICENSE'), 'clone license');
+			return Promise.resolve();
+		});
+
+		try {
+			await withDoActionsDest(async (dest) => {
+				fs.writeFileSync(path.join(dest, 'x'), 'x');
+
+				await degit().doActions(
+					[
+						{ action: 'clone', src: 'user/repo' } as Directive,
+						{ action: 'remove', files: ['LICENSE'] } as Directive,
+					],
+					dest,
+				);
+
+				assert.equal(fs.existsSync(path.join(dest, 'x')), true);
+				assert.equal(fs.existsSync(path.join(dest, 'README.md')), true);
+				assert.equal(fs.existsSync(path.join(dest, 'LICENSE')), false);
+				assertNoActionsCache();
+			});
+		} finally {
+			stub.mockRestore();
+		}
 	});
 });
 /* eslint-enable max-lines-per-function */

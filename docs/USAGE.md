@@ -103,10 +103,11 @@ If you omit the ref, `degit` resolves the repository's default branch.
 
 ### Create a new folder
 
-If `dest` is omitted, `degit` extracts into the current directory. The directory must be empty unless you use `--force`.
+If `dest` is omitted, `degit` extracts into the current directory. The directory must be empty unless you use `--force`. Use `--repo-name` or `-r` to extract into a directory named after the repository instead:
 
 ```bash
 degit user/repo my-new-project
+degit -r user/repo
 ```
 
 ### Clone a subdirectory
@@ -145,6 +146,7 @@ Missing or out-of-bounds paths are skipped with a warning; if no requested paths
 | `--cache`         | `-c`         | Only use the local cache; do not hit the network.                                                     |
 | `--force`         | `-f`         | Allow cloning into a non-empty destination directory.                                                 |
 | `--files <paths>` | `-F <paths>` | Keep only the listed files or directories.                                                            |
+| `--repo-name`     | `-r`         | Clone into a directory named after the repository.                                                    |
 | `--verbose`       | `-v`         | Print extra progress information.                                                                     |
 | `--mode <mode>`   | `-m`         | `tar` (default) or `git`. `--mode=git` is accepted for compatibility but prints a deprecation notice. |
 
@@ -244,6 +246,32 @@ The returned emitter exposes two event channels:
 
 Event objects include at least `message`. They may also include `code`, `dest`, `repo`, `url`, `ref`, and `subdir`.
 
+### Running actions programmatically
+
+You can run `degit.json`-style actions without first cloning a repository. Just omit the source and call `doActions`:
+
+```js
+import degit from 'degit';
+
+const emitter = degit();
+
+await emitter.doActions(
+	[
+		{ action: 'clone', src: 'user/another-repo' },
+		{ action: 'remove', files: ['LICENSE'] },
+	],
+	'path/to/dest',
+);
+```
+
+Rules:
+
+- A `clone` action can create the destination. `remove` and `search_replace` need an existing directory.
+- The destination must not be a symlink, even to a directory; symlinks are rejected with `ENOTDIR`.
+- Child `clone` directives use their own source's natural mode, not the parent instance's `mode`.
+- When a clone overwrites an existing destination, the original files are stashed, the clone runs, and then the original files are merged back. Clone output keeps the original `degit.json` if one existed.
+- `clone()` on a source-less instance rejects with `MISSING_SRC`.
+
 ## degit.json actions
 
 After the initial clone, `degit` looks for a `degit.json` file at the top level of the destination and runs the actions it defines. A JSON Schema is available at [schemas/degit.schema.json](../schemas/degit.schema.json) for editor autocompletion and validation.
@@ -294,6 +322,18 @@ Remove one or more files:
 	{
 		"action": "remove",
 		"files": ["LICENSE"]
+	}
+]
+```
+
+`files` entries support glob patterns, so you can remove a whole class of files without listing each one. Because glob patterns can match more files than intended, they are only processed when `allowGlobs` is set to `true`. Matches outside the destination are skipped.
+
+```json
+[
+	{
+		"action": "remove",
+		"files": [".github/**/*.md"],
+		"allowGlobs": true
 	}
 ]
 ```

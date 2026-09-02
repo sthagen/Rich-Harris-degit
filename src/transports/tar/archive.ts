@@ -1,14 +1,14 @@
 import { constants, cp, mkdtemp, readFile, readdir, rm, access } from 'node:fs/promises';
 import path from 'node:path';
 import * as tar from 'tar';
-import { getProvider, type Repo } from '../../domain/repo.js';
+import { providerArchiveTemplates, type Repo } from '../../domain/repo.js';
 import { readCachedRefs, updateCache } from './cache.js';
 import { DegitError, mkdirp } from '../../shared/utils.js';
 import type { EventInfo, FetchFn } from '../../domain/types.js';
 
 /* eslint-disable max-lines */
 
-type TarContext = {
+export type TarContext = {
 	cache?: boolean;
 	cloneWithGit(dest: string, ref?: string): Promise<void>;
 	fetch: FetchFn;
@@ -55,17 +55,10 @@ async function resolveArchiveHash(
 }
 
 async function createArchiveSource(dir: string, repo: Repo, hash: string): Promise<ArchiveSource> {
-	const provider = getProvider(repo.site);
-	if (!provider) {
-		throw new DegitError(`degit supports GitHub, GitLab, Sourcehut and BitBucket`, {
-			code: 'UNSUPPORTED_HOST',
-		});
-	}
-
 	return {
 		file: path.join(dir, `${hash}.tar.gz`),
 		subdir: null,
-		url: provider.archiveUrl(repo, hash),
+		url: providerArchiveTemplates[repo.site](repo, hash),
 		workDir: await mkdtemp(path.join(dir, 'extract-')),
 	};
 }
@@ -140,9 +133,7 @@ async function ensureArchiveFile(context: TarContext, source: ArchiveSource) {
 			message: `${source.file} already exists locally`,
 		});
 		return;
-	} catch {
-		// Missing files and permission-denied paths are both treated as absent.
-	}
+	} catch {}
 
 	mkdirp(path.dirname(source.file));
 
@@ -176,8 +167,19 @@ async function extractArchive(context: TarContext, source: ArchiveSource, dest: 
 			message: `extracting ${source.subdir ? `${context.repo.subdir} from ` : ''}${source.file} to ${source.workDir}`,
 		});
 
+		const [strip, files] = source.subdir
+			? [source.subdir.split('/').length, [source.subdir]]
+			: [1, []];
+
 		await withArchiveRetry(context, source, () =>
-			untar(source.file, source.workDir, source.subdir),
+			tar.extract(
+				{
+					C: source.workDir,
+					file: source.file,
+					strip,
+				},
+				files,
+			),
 		);
 		const hasPointers = await hasGitLfsPointers(source.workDir);
 		if (!hasPointers) {
@@ -221,9 +223,7 @@ async function withArchiveRetry(
 
 		try {
 			await rm(source.file, { force: true, recursive: true });
-		} catch {
-			// Ignore cleanup failures and continue with a fresh download.
-		}
+		} catch {}
 
 		await context.fetch(source.url, source.file, context.proxy);
 		await operation();
@@ -256,19 +256,7 @@ export async function cloneWithTar(context: TarContext, dir: string, dest: strin
 	await updateCache(dir, context.repo, hash, cached);
 }
 
-function untar(file: string, dest: string, subdir: string | null = null) {
-	return tar.extract(
-		{
-			C: dest,
-			file,
-			strip: subdir ? subdir.split('/').length : 1,
-		},
-		subdir ? [subdir] : [],
-	);
-}
-
 async function hasGitLfsPointers(dir: string): Promise<boolean> {
-	// Paths are discovered from extracted archive contents under a controlled temp dir.
 	// eslint-disable-next-line security/detect-non-literal-fs-filename
 	const entries = await readdir(dir, { withFileTypes: true });
 	const checks = entries.map(async (entry) => {
@@ -282,7 +270,6 @@ async function hasGitLfsPointers(dir: string): Promise<boolean> {
 			return false;
 		}
 
-		// Paths are discovered from extracted archive contents under a controlled temp dir.
 		// eslint-disable-next-line security/detect-non-literal-fs-filename
 		const contents = await readFile(entryPath, 'utf8');
 		return (
@@ -296,14 +283,12 @@ async function hasGitLfsPointers(dir: string): Promise<boolean> {
 }
 
 async function copyExtractedFiles(sourceDir: string, destDir: string) {
-	// Paths are discovered from extracted archive contents under a controlled temp dir.
 	// eslint-disable-next-line security/detect-non-literal-fs-filename
 	const entries = await readdir(sourceDir, { withFileTypes: true });
 	await Promise.all(
 		entries.map(async (entry) => {
 			const sourcePath = path.join(sourceDir, entry.name);
 			const destinationPath = path.join(destDir, entry.name);
-			// cp() overwrites existing files the same way the old copy behavior did for this path.
 			await cp(sourcePath, destinationPath, { recursive: true });
 		}),
 	);
